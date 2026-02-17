@@ -274,7 +274,7 @@ with st.sidebar:
     st.divider()
     
     can_run = product_launch_date and analysis_end_date
-    run_query = st.button("🚀 Launch Analysis", type="primary", use_container_width=True, disabled=not can_run)
+    run_query = st.button("🚀 Launch Analysis", type="primary", width='stretch', disabled=not can_run)
     
     if not can_run:
         st.info("👆 Please select both dates to begin analysis")
@@ -447,7 +447,7 @@ if 'df_master' in st.session_state:
             showlegend=True,
             legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
         )
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width='stretch')
     
     st.divider()
     
@@ -540,7 +540,7 @@ if 'df_master' in st.session_state:
                 data=csv,
                 file_name=f"{selected_category}_products_{date.today().strftime('%Y%m%d')}.csv",
                 mime="text/csv",
-                use_container_width=True
+                width='stretch'
             )
     else:
         st.info("No product categories found in the data.")
