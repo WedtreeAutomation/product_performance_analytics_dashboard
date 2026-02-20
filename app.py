@@ -162,16 +162,18 @@ if not all([CLIENT_ID, CLIENT_SECRET, TENANT_ID, FABRIC_ENDPOINT, SHOPIFY_TOKEN]
 # =========================
 # Caching Functions
 # =========================
-@st.cache_resource
 def get_fabric_token():
-    """Cache Fabric token"""
     try:
-        credential = ClientSecretCredential(TENANT_ID, CLIENT_ID, CLIENT_SECRET)
-        scope = 'https://api.fabric.microsoft.com/.default'
-        token = credential.get_token(scope).token
-        return token
+        credential = ClientSecretCredential(
+            TENANT_ID,
+            CLIENT_ID,
+            CLIENT_SECRET
+        )
+        scope = "https://api.fabric.microsoft.com/.default"
+        token = credential.get_token(scope)
+        return token.token
     except Exception as e:
-        st.error(f"Failed to authenticate with Fabric: {e}")
+        st.error(f"Authentication failed: {e}")
         return None
 
 def get_fabric_headers():
