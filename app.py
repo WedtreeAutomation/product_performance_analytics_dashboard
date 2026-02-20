@@ -446,7 +446,7 @@ with st.sidebar:
     run_query = st.button(
         "🚀 Run Analysis", 
         type="primary", 
-        width='Stretch'
+        width='stretch'
     )
 
 # Initialize session state
@@ -645,7 +645,7 @@ if 'df' in st.session_state and st.session_state['loaded']:
         # Display category stats table
         st.dataframe(
             cat_stats,
-            width='Stretch',
+            width='stretch',
             hide_index=True,
             column_config={
                 "Avg Performance %": st.column_config.ProgressColumn(
@@ -802,7 +802,7 @@ if 'df' in st.session_state and st.session_state['loaded']:
                                     response = requests.get(image_url, timeout=5)
                                     response.raise_for_status()
                                     img = Image.open(BytesIO(response.content))
-                                    st.image(img, width='Stretch')
+                                    st.image(img, width='stretch')
                                 except Exception:
                                     st.markdown("""
                                         <div style="width:100%;height:150px;background:#f0f2f6;border-radius:10px;
@@ -850,7 +850,7 @@ if 'df' in st.session_state and st.session_state['loaded']:
             csv,
             f"products_{date.today()}.csv",
             "text/csv",
-            width='Stretch'
+            width='stretch'
         )
 
 # Footer
