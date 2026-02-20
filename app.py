@@ -130,6 +130,14 @@ st.markdown("""
         0% { transform: rotate(0deg); }
         100% { transform: rotate(360deg); }
     }
+    .stTextInput input {
+        border-radius: 25px;
+        border: 2px solid #667eea;
+        padding: 0.5rem 1rem;
+    }
+    .stSelectbox div[data-baseweb="select"] {
+        border-radius: 25px;
+    }
     </style>
 """, unsafe_allow_html=True)
 
@@ -139,7 +147,7 @@ st.markdown("""
 st.markdown("""
     <div class="main-header">
         <h1 style="font-size: 3rem; margin-bottom: 0.5rem;">📊 Product Performance Analytics Pro</h1>
-        <p style="font-size: 1.2rem; opacity: 0.9;">Smart category-based product browsing</p>
+        <p style="font-size: 1.2rem; opacity: 0.9;">Smart category-based product browsing with auto image loading</p>
     </div>
 """, unsafe_allow_html=True)
 
@@ -269,12 +277,7 @@ def get_shopify_images_batch(sku_list):
     with ThreadPoolExecutor(max_workers=5) as executor: 
         future_to_sku = {executor.submit(fetch_single_product_image, sku): sku for sku in sku_list}
         
-        # Use a placeholder in the UI instead of progress bar
-        status_text = st.empty()
-        status_text.info(f"📸 Loading {len(sku_list)} images...")
-        
         completed = 0
-        
         for future in as_completed(future_to_sku):
             try:
                 result = future.result(timeout=5)
@@ -284,10 +287,6 @@ def get_shopify_images_batch(sku_list):
                 results.append({"sku": sku, "image_url": None, "alt_text": f"Product {sku}"})
             
             completed += 1
-            if completed % 5 == 0:  # Update every 5 images
-                status_text.info(f"📸 Loaded {completed}/{len(sku_list)} images...")
-        
-        status_text.empty()
     
     return pd.DataFrame(results)
 
@@ -429,9 +428,6 @@ with st.sidebar:
     show_new_only = st.checkbox("✨ New Products Only", value=False)
     min_perf = st.slider("📈 Min Performance %", 0, 100, 0, 5)
     
-    # Image toggle
-    show_images = st.checkbox("🖼️ Show Product Images", value=True)
-    
     st.divider()
     
     # Results per page
@@ -448,7 +444,7 @@ with st.sidebar:
     run_query = st.button(
         "🚀 Run Analysis", 
         type="primary", 
-        width='stretch'
+        use_container_width=True
     )
 
 # Initialize session state
@@ -456,6 +452,10 @@ if 'category_images_loaded' not in st.session_state:
     st.session_state.category_images_loaded = {}
 if 'current_page' not in st.session_state:
     st.session_state.current_page = 1
+if 'search_query' not in st.session_state:
+    st.session_state.search_query = ""
+if 'sort_option' not in st.session_state:
+    st.session_state.sort_option = "Performance (High to Low)"
 
 # =========================
 # Main Analysis
@@ -559,7 +559,6 @@ if run_query:
             
             # Store in session state
             st.session_state['df'] = df_final
-            st.session_state['show_images'] = show_images
             st.session_state['loaded'] = True
             
             # Store unique categories
@@ -570,13 +569,13 @@ if run_query:
             
             # Reset category image loading state
             st.session_state.category_images_loaded = {}
+            st.session_state.current_page = 1
 
 # =========================
 # Dashboard Display
 # =========================
 if 'df' in st.session_state and st.session_state['loaded']:
     df = st.session_state['df']
-    show_images = st.session_state.get('show_images', True)
     categories = st.session_state.get('categories', [])
     
     # Quick Stats
@@ -647,7 +646,7 @@ if 'df' in st.session_state and st.session_state['loaded']:
         # Display category stats table
         st.dataframe(
             cat_stats,
-            width='stretch',
+            use_container_width=True,
             hide_index=True,
             column_config={
                 "Avg Performance %": st.column_config.ProgressColumn(
@@ -682,6 +681,8 @@ if 'df' in st.session_state and st.session_state['loaded']:
             # Reset page number when category changes
             if 'last_category' not in st.session_state or st.session_state.last_category != selected_category:
                 st.session_state.current_page = 1
+                st.session_state.search_query = ""
+                st.session_state.sort_option = "Performance (High to Low)"
                 st.session_state.last_category = selected_category
             
             # Filter by category
@@ -693,171 +694,184 @@ if 'df' in st.session_state and st.session_state['loaded']:
                 </div>
             """, unsafe_allow_html=True)
             
-            # Search within category
-            search = st.text_input(f"🔍 Search in {selected_category}", 
-                                  placeholder="Product name or SKU...",
-                                  key=f"search_{selected_category}")
+            # Search and Sort in columns for better layout
+            col1, col2 = st.columns([3, 2])
             
-            # Sort options
-            sort_by = st.selectbox(
-                "Sort by:",
-                ["Performance (High to Low)", "Sold (High to Low)", "Name (A-Z)", "Stock (Low to High)"],
-                key=f"sort_{selected_category}"
-            )
+            with col1:
+                # Search within category
+                search_query = st.text_input(
+                    f"🔍 Search in {selected_category}", 
+                    value=st.session_state.search_query,
+                    placeholder="Product name or SKU...",
+                    key=f"search_{selected_category}"
+                )
+                st.session_state.search_query = search_query
+            
+            with col2:
+                # Sort options
+                sort_option = st.selectbox(
+                    "Sort by:",
+                    ["Performance (High to Low)", "Sold (High to Low)", "Name (A-Z)", "Stock (Low to High)"],
+                    index=["Performance (High to Low)", "Sold (High to Low)", "Name (A-Z)", "Stock (Low to High)"].index(st.session_state.sort_option),
+                    key=f"sort_{selected_category}"
+                )
+                st.session_state.sort_option = sort_option
             
             # Apply search filter
-            if search:
+            if search_query:
                 df_category = df_category[
-                    df_category['title'].str.contains(search, case=False, na=False) |
-                    df_category['sku'].str.contains(search, case=False, na=False)
+                    df_category['title'].str.contains(search_query, case=False, na=False) |
+                    df_category['sku'].str.contains(search_query, case=False, na=False)
                 ]
-                st.info(f"Found {len(df_category)} products matching '{search}'")
+                if len(df_category) == 0:
+                    st.warning(f"No products found matching '{search_query}'")
             
             # Apply sorting
-            if sort_by == "Performance (High to Low)":
+            if sort_option == "Performance (High to Low)":
                 df_category = df_category.sort_values('performance_pct', ascending=False)
-            elif sort_by == "Sold (High to Low)":
+            elif sort_option == "Sold (High to Low)":
                 df_category = df_category.sort_values('total_sold', ascending=False)
-            elif sort_by == "Name (A-Z)":
+            elif sort_option == "Name (A-Z)":
                 df_category = df_category.sort_values('title')
-            elif sort_by == "Stock (Low to High)":
+            elif sort_option == "Stock (Low to High)":
                 df_category = df_category.sort_values('currentstock')
             
             # Pagination
             total_results = len(df_category)
-            total_pages = (total_results + results_per_page - 1) // results_per_page
+            total_pages = (total_results + results_per_page - 1) // results_per_page if total_results > 0 else 1
             
-            if total_pages > 1:
-                col1, col2, col3, col4 = st.columns([1, 2, 2, 1])
+            if total_results > 0:
+                # Ensure current page is valid
+                if st.session_state.current_page > total_pages:
+                    st.session_state.current_page = 1
                 
-                with col1:
-                    if st.button("◀ First", disabled=(st.session_state.current_page == 1), key=f"first_{selected_category}"):
-                        st.session_state.current_page = 1
-                        st.rerun()
-                
-                with col2:
-                    if st.button("◀ Previous", disabled=(st.session_state.current_page == 1), key=f"prev_{selected_category}"):
-                        st.session_state.current_page -= 1
-                        st.rerun()
-                
-                with col3:
-                    if st.button("Next ▶", disabled=(st.session_state.current_page == total_pages), key=f"next_{selected_category}"):
-                        st.session_state.current_page += 1
-                        st.rerun()
-                
-                with col4:
-                    if st.button("Last ▶", disabled=(st.session_state.current_page == total_pages), key=f"last_{selected_category}"):
-                        st.session_state.current_page = total_pages
-                        st.rerun()
-                
-                # Page indicator
-                st.caption(f"Page {st.session_state.current_page} of {total_pages}")
-            
-            # Get current page data
-            start_idx = (st.session_state.current_page - 1) * results_per_page
-            end_idx = min(start_idx + results_per_page, total_results)
-            df_page = df_category.iloc[start_idx:end_idx].copy()
-            
-            # Show product count
-            st.caption(f"Showing {start_idx + 1}-{end_idx} of {total_results} products")
-            
-            # AUTO-LOAD IMAGES for current page (no button needed)
-            if show_images and not df_page.empty:
-                # Create a unique key for this category and page
-                image_key = f"{selected_category}_page_{st.session_state.current_page}"
-                
-                # Check if images for this page are already loaded
-                if image_key not in st.session_state.category_images_loaded:
-                    with st.spinner(f"📸 Loading {len(df_page)} images..."):
-                        sku_list = df_page['sku'].tolist()
-                        df_images = get_shopify_images_batch(sku_list)
-                        
-                        # Merge images
-                        df_page['sku'] = df_page['sku'].astype(str).str.strip().str.upper()
-                        df_images['sku'] = df_images['sku'].astype(str).str.strip().str.upper()
-                        df_images = df_images.drop_duplicates(subset=['sku'])
-                        df_page = df_page.merge(df_images, on='sku', how='left')
-                        
-                        # Mark as loaded
-                        st.session_state.category_images_loaded[image_key] = df_page
+                if total_pages > 1:
+                    col1, col2, col3, col4, col5 = st.columns([1, 1, 2, 1, 1])
                     
-                    st.success(f"✅ Loaded {len(df_images[df_images['image_url'].notna()])} images")
-                    st.rerun()  # Rerun to display images
-                else:
-                    # Use cached images
-                    df_page = st.session_state.category_images_loaded[image_key]
-            
-            # Display products
-            if not df_page.empty:
-                # Display in a 3-column grid
-                cols = st.columns(3)
-                for idx, (_, row) in enumerate(df_page.iterrows()):
-                    with cols[idx % 3]:
-                        with st.container():
-                            st.markdown('<div class="product-card">', unsafe_allow_html=True)
+                    with col1:
+                        if st.button("⏮️ First", disabled=(st.session_state.current_page == 1), key=f"first_{selected_category}"):
+                            st.session_state.current_page = 1
+                            st.rerun()
+                    
+                    with col2:
+                        if st.button("◀ Prev", disabled=(st.session_state.current_page == 1), key=f"prev_{selected_category}"):
+                            st.session_state.current_page -= 1
+                            st.rerun()
+                    
+                    with col3:
+                        st.markdown(f"<center>Page {st.session_state.current_page} of {total_pages}</center>", unsafe_allow_html=True)
+                    
+                    with col4:
+                        if st.button("Next ▶", disabled=(st.session_state.current_page == total_pages), key=f"next_{selected_category}"):
+                            st.session_state.current_page += 1
+                            st.rerun()
+                    
+                    with col5:
+                        if st.button("⏭️ Last", disabled=(st.session_state.current_page == total_pages), key=f"last_{selected_category}"):
+                            st.session_state.current_page = total_pages
+                            st.rerun()
+                
+                # Get current page data
+                start_idx = (st.session_state.current_page - 1) * results_per_page
+                end_idx = min(start_idx + results_per_page, total_results)
+                df_page = df_category.iloc[start_idx:end_idx].copy()
+                
+                # Show product count
+                st.caption(f"Showing {start_idx + 1}-{end_idx} of {total_results} products")
+                
+                # AUTO-LOAD IMAGES for current page
+                if not df_page.empty:
+                    # Create a unique key for this category and page
+                    image_key = f"{selected_category}_page_{st.session_state.current_page}_search_{search_query}"
+                    
+                    # Check if images for this page are already loaded
+                    if image_key not in st.session_state.category_images_loaded:
+                        with st.spinner(f"📸 Loading {len(df_page)} product images..."):
+                            sku_list = df_page['sku'].tolist()
+                            df_images = get_shopify_images_batch(sku_list)
                             
-                            # Display image if available
-                            image_url = row.get("image_url") if show_images else None
+                            # Merge images
+                            df_page['sku'] = df_page['sku'].astype(str).str.strip()
+                            df_images['sku'] = df_images['sku'].astype(str).str.strip()
+                            df_images = df_images.drop_duplicates(subset=['sku'])
+                            df_page = df_page.merge(df_images, on='sku', how='left')
                             
-                            if image_url and pd.notna(image_url):
-                                try:
-                                    response = requests.get(image_url, timeout=5)
-                                    response.raise_for_status()
-                                    img = Image.open(BytesIO(response.content))
-                                    st.image(img, width='stretch')
-                                except Exception:
+                            # Mark as loaded
+                            st.session_state.category_images_loaded[image_key] = df_page
+                    else:
+                        # Use cached images
+                        df_page = st.session_state.category_images_loaded[image_key]
+                    
+                    # Display products in a 3-column grid
+                    cols = st.columns(3)
+                    for idx, (_, row) in enumerate(df_page.iterrows()):
+                        with cols[idx % 3]:
+                            with st.container():
+                                st.markdown('<div class="product-card">', unsafe_allow_html=True)
+                                
+                                # Display image if available
+                                image_url = row.get("image_url")
+                                
+                                if image_url and pd.notna(image_url):
+                                    try:
+                                        response = requests.get(image_url, timeout=5)
+                                        response.raise_for_status()
+                                        img = Image.open(BytesIO(response.content))
+                                        st.image(img, use_container_width=True)
+                                    except Exception:
+                                        st.markdown("""
+                                            <div style="width:100%;height:150px;background:#f0f2f6;border-radius:10px;
+                                                    display:flex;align-items:center;justify-content:center;color:#999;">
+                                                📷 Failed to Load
+                                            </div>
+                                        """, unsafe_allow_html=True)
+                                else:
                                     st.markdown("""
                                         <div style="width:100%;height:150px;background:#f0f2f6;border-radius:10px;
                                                 display:flex;align-items:center;justify-content:center;color:#999;">
-                                            📷 Failed to Load
+                                            📷 No Image Available
                                         </div>
                                     """, unsafe_allow_html=True)
-                            elif show_images:
-                                # Still loading or no image
-                                st.markdown("""
-                                    <div style="width:100%;height:150px;background:#f0f2f6;border-radius:10px;
-                                            display:flex;align-items:center;justify-content:center;color:#999;">
-                                        📷 No Image
+                                
+                                # Product info
+                                performance_color = "#4caf50" if row['performance_pct'] >= 50 else "#ff9800" if row['performance_pct'] >= 25 else "#f44336"
+                                
+                                st.markdown(f"""
+                                    <div style="padding: 10px 0;">
+                                        <strong>{row['title'][:40]}{'...' if len(row['title']) > 40 else ''}</strong><br>
+                                        <span style="color: #666; font-size: 0.8rem;">SKU: {row['sku']}</span><br>
+                                        <span style="color: {performance_color}; font-size: 1.3rem; font-weight: bold;">{row['performance_pct']:.1f}%</span>
+                                        <div style="display: flex; gap: 5px; margin-top: 5px; flex-wrap: wrap;">
+                                            <span class="badge badge-success">📦 {int(row['currentstock'])} in stock</span>
+                                            <span class="badge badge-warning">🛒 {int(row['total_sold'])} sold</span>
+                                            <span class="badge badge-info">{'✨ New' if row['category'] == 'New' else '📦 Existing'}</span>
+                                        </div>
                                     </div>
                                 """, unsafe_allow_html=True)
-                            
-                            # Product info
-                            performance_color = "#4caf50" if row['performance_pct'] >= 50 else "#ff9800" if row['performance_pct'] >= 25 else "#f44336"
-                            
-                            st.markdown(f"""
-                                <div style="padding: 10px 0;">
-                                    <strong>{row['title'][:40]}{'...' if len(row['title']) > 40 else ''}</strong><br>
-                                    <span style="color: #666; font-size: 0.8rem;">SKU: {row['sku']}</span><br>
-                                    <span style="color: {performance_color}; font-size: 1.3rem; font-weight: bold;">{row['performance_pct']:.1f}%</span>
-                                    <div style="display: flex; gap: 5px; margin-top: 5px; flex-wrap: wrap;">
-                                        <span class="badge badge-success">📦 {int(row['currentstock'])}</span>
-                                        <span class="badge badge-warning">🛒 {int(row['total_sold'])}</span>
-                                        <span class="badge badge-info">{'✨ New' if row['category'] == 'New' else '📦 Existing'}</span>
-                                    </div>
-                                </div>
-                            """, unsafe_allow_html=True)
-                            
-                            st.markdown('</div>', unsafe_allow_html=True)
+                                
+                                st.markdown('</div>', unsafe_allow_html=True)
             else:
-                st.info(f"No products found in {selected_category} matching your criteria.")
+                st.info(f"No products found in {selected_category} matching your search criteria.")
     
     # Export
     st.divider()
     
     col1, col2, col3 = st.columns([1, 2, 1])
     with col2:
-        csv = df.drop(columns=['image_url', 'alt_text'], errors='ignore').to_csv(index=False).encode('utf-8')
+        # Remove image columns from export
+        df_export = df.drop(columns=['image_url', 'alt_text'], errors='ignore')
+        csv = df_export.to_csv(index=False).encode('utf-8')
         st.download_button(
             "📥 Download Complete Dataset",
             csv,
             f"products_{date.today()}.csv",
             "text/csv",
-            width='stretch'
+            use_container_width=True
         )
 
 # Footer
 st.markdown(f"""
     <div style="text-align: center; margin-top: 2rem; padding: 1rem; background: #f8f9fa; border-radius: 10px;">
-        <p style="color: #666;">⚡ Fast Analytics | Auto-loads images per page | {datetime.now().strftime("%H:%M:%S")}</p>
+        <p style="color: #666;">⚡ Fast Analytics | Auto-loads images per page | Last updated: {datetime.now().strftime("%H:%M:%S")}</p>
     </div>
 """, unsafe_allow_html=True)
