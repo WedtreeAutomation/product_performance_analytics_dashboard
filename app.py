@@ -95,10 +95,9 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-# Initialize credentials from environment variables
-@st.cache_resource
+# Removed caching to prevent API/Token errors
 def init_credentials():
-    """Initialize and cache Azure credentials"""
+    """Initialize Azure credentials"""
     return {
         "client_id": os.getenv("AZURE_CLIENT_ID"),
         "client_secret": os.getenv("AZURE_CLIENT_SECRET"),
@@ -108,8 +107,7 @@ def init_credentials():
         "shopify_token": os.getenv("SHOPIFY_ACCESS_TOKEN")
     }
 
-# Initialize headers
-@st.cache_resource
+# Removed caching to prevent token expiration/hash errors
 def get_headers(creds):
     """Get authenticated headers for Fabric API"""
     try:
@@ -129,6 +127,8 @@ def get_headers(creds):
         st.error(f"Authentication failed: {e}")
         return None
 
+# Kept caching ONLY for the Shopify API to keep image resolution lightning fast
+@st.cache_data(ttl=3600, show_spinner=False)
 def fetch_product_image_by_category(category, product_title=None):
     """Fetch product image from Shopify using category and optional title"""
     try:
@@ -211,6 +211,7 @@ def fetch_product_image_by_category(category, product_title=None):
     except Exception as e:
         return None
 
+# UNTOUCHED original method as requested
 def load_image_from_url(url):
     """Load image from URL and return PIL Image"""
     try:
@@ -221,8 +222,13 @@ def load_image_from_url(url):
     except:
         return None
 
-# Data fetching functions with caching
-@st.cache_data(ttl=300)
+# Wrapper to cache the PIL image in memory. 
+# Leaves your original load_image_from_url function completely unmodified while giving massive speed boosts.
+@st.cache_resource(show_spinner=False)
+def get_cached_image(url):
+    return load_image_from_url(url)
+
+# Removed caching from Fabric endpoints
 def get_products(product_created_date):
     """Fetch products launched on a specific date"""
     try:
@@ -264,7 +270,7 @@ def get_products(product_created_date):
         st.error(f"Error loading products: {e}")
         return pd.DataFrame()
 
-@st.cache_data(ttl=300)
+# Removed caching from Fabric endpoints
 def get_inventory_data(order_start, order_end):
     """Fetch inventory and sales data"""
     try:
@@ -341,12 +347,12 @@ def calculate_metrics(launch_df, sales_df, launch_date):
     # Card 1: Products Launched
     metrics['products_launched'] = len(launch_df) if not launch_df.empty else 0
 
-    categories_launched = launch_df['productType'].unique().tolist()
+    categories_launched = launch_df['productType'].unique().tolist() if not launch_df.empty else []
     
     # Card 2: Categories
-    metrics['categories'] = len(categories_launched) if not launch_df.empty else 0
+    metrics['categories'] = len(categories_launched)
     
-    # Card 3: SKU Sold within Range
+    # Card 3 & 4: SKU and Quantity Sold within Range
     if not sales_df.empty and not launch_df.empty:
         launch_dt = pd.to_datetime(launch_date).date()
         
@@ -355,45 +361,30 @@ def calculate_metrics(launch_df, sales_df, launch_date):
             sales_df['product_createdAt'].dt.date == launch_dt
         ]
         new_skus_sold = new_products['sku'].nunique() if not new_products.empty else 0
+        new_products_qty = new_products['quantity'].sum() if not new_products.empty else 0
         
         # Old products (existing before launch date)
         old_products = sales_df[
-            (sales_df['product_createdAt'].dt.date < launch_dt) & (sales_df['product_category'].isin(categories_launched))
+            (sales_df['product_createdAt'].dt.date < launch_dt) & 
+            (sales_df['product_category'].isin(categories_launched))
         ]
         old_skus_sold = old_products['sku'].nunique() if not old_products.empty else 0
+        old_products_qty = old_products['quantity'].sum() if not old_products.empty else 0
         
         metrics['new_skus_sold'] = new_skus_sold
         metrics['old_skus_sold'] = old_skus_sold
-    else:
-        metrics['new_skus_sold'] = 0
-        metrics['old_skus_sold'] = 0
-    
-    # Card 4: Quantity Sold within Range
-    if not sales_df.empty and not launch_df.empty:
-        launch_dt = pd.to_datetime(launch_date).date()
-        
-        # New products quantity
-        new_products = sales_df[
-            sales_df['product_createdAt'].dt.date == launch_dt
-        ]
-        new_products_qty = new_products['quantity'].sum() if not new_products.empty else 0
-        
-        # Old products quantity
-        old_products = sales_df[
-            (sales_df['product_createdAt'].dt.date < launch_dt) & (sales_df['product_category'].isin(categories_launched))
-        ]
-        old_products_qty = old_products['quantity'].sum() if not old_products.empty else 0
-        
         metrics['new_qty_sold'] = int(new_products_qty)
         metrics['old_qty_sold'] = int(old_products_qty)
     else:
+        metrics['new_skus_sold'] = 0
+        metrics['old_skus_sold'] = 0
         metrics['new_qty_sold'] = 0
         metrics['old_qty_sold'] = 0
     
     return metrics
 
-def display_product_card(product_data, inventory_data, category):
-    """Display a single product card with image and details"""
+def display_product_card_vertical(product_data, inventory_data, category):
+    """Display a single product card optimized for a grid"""
     sku = product_data['sku']
     title = product_data['title']
     
@@ -411,35 +402,45 @@ def display_product_card(product_data, inventory_data, category):
         current_stock = 0
         order_count = 0
     
-    # Create product card with image
-    col1, col2 = st.columns([1, 2])
-    
-    with col1:
-        # Fetch and display product image by category
+    with st.container(border=True):
+        # Image rendering section
         with st.spinner("🖼️"):
             image_url = fetch_product_image_by_category(category, title)
             if image_url:
-                img = load_image_from_url(image_url)
+                img = get_cached_image(image_url) # Utilizes cache wrapper
                 if img:
-                    st.image(img, caption=title, use_container_width=True)
+                    st.image(img, use_container_width=True)
                 else:
-                    st.image("https://via.placeholder.com/150x150?text=No+Image", 
-                            caption="Placeholder", use_container_width=True)
+                    st.image("https://via.placeholder.com/300x300?text=No+Image", use_container_width=True)
             else:
-                st.image("https://via.placeholder.com/150x150?text=No+Image", 
-                        caption="No Image Available", use_container_width=True)
-    
-    with col2:
-        st.markdown(f"**SKU:** `{sku}`")
-        st.markdown(f"**Category:** {category}")
+                st.image("https://via.placeholder.com/300x300?text=No+Image", use_container_width=True)
         
-        # Display metrics in columns
+        # Details & Metrics section
+        st.markdown(f"**{title}**")
+        st.caption(f"SKU: `{sku}`")
+        
         mcol1, mcol2, mcol3 = st.columns(3)
         mcol1.metric("Sold", f"{total_sold:,.0f}")
         mcol2.metric("Stock", f"{current_stock:,.0f}")
         mcol3.metric("Orders", f"{order_count}")
+
+def display_product_grid(products_df, inventory_df, category):
+    """Renders products in a clean 3-column responsive grid"""
+    if products_df.empty:
+        st.info("No products found in this classification.")
+        return
+
+    # Convert to list to easily chunk items
+    product_list = products_df[['sku', 'title']].drop_duplicates().to_dict('records')
     
-    st.markdown("---")
+    # Iterate in chunks of 3
+    for i in range(0, len(product_list), 3):
+        cols = st.columns(3)
+        chunk = product_list[i:i+3]
+        
+        for j, product_data in enumerate(chunk):
+            with cols[j]:
+                display_product_card_vertical(product_data, inventory_df, category)
 
 def main():
     # Header
@@ -448,9 +449,8 @@ def main():
     
     # Sidebar
     with st.sidebar:
-        st.image("https://via.placeholder.com/300x100/1E88E5/ffffff?text=Product+Analytics", 
-                 width=True)
-        
+        st.image("https://placehold.co/300x100/1E88E5/FFFFFF?text=Prashanti+Sarees", width=300)
+
         st.markdown("## 📅 Date Selection")
         
         # Date inputs
@@ -640,7 +640,7 @@ def main():
             
             st.markdown("---")
             
-            # Product Details by Category - No nested dropdown
+            # Product Details by Category
             st.markdown("## 📦 Product Details by Category")
             
             if not products_df.empty and not inventory_df.empty:
@@ -656,20 +656,28 @@ def main():
                     )
                     
                     if selected_category:
-                        st.markdown(f"### Products in {selected_category}")
+                        st.markdown(f"### Visual Directory: {selected_category}")
                         
-                        # Get all products in this category (no further dropdown)
+                        # Separate New vs Old products chronologically
                         category_products = inventory_df[
-                            (inventory_df['product_category'] == selected_category) &
-                            (inventory_df['product_createdAt'].dt.date == launch_dt)
-                        ][['sku', 'title']].drop_duplicates()
+                            inventory_df['product_category'] == selected_category
+                        ]
                         
-                        if not category_products.empty:
-                            # Display all products in the category as cards
-                            for _, product in category_products.iterrows():
-                                display_product_card(product, inventory_df, selected_category)
-                        else:
-                            st.info(f"No products found in category: {selected_category}")
+                        new_cat_products = category_products[
+                            category_products['product_createdAt'].dt.date == launch_dt
+                        ]
+                        old_cat_products = category_products[
+                            category_products['product_createdAt'].dt.date < launch_dt
+                        ]
+                        
+                        # Render Grid UI: New Products First
+                        st.markdown("#### ✨ Newly Launched Products")
+                        display_product_grid(new_cat_products, inventory_df, selected_category)
+                        
+                        # Render Grid UI: Old Products Second
+                        st.markdown("---")
+                        st.markdown("#### 🕰️ Legacy / Existing Products")
+                        display_product_grid(old_cat_products, inventory_df, selected_category)
                 else:
                     st.warning("No categories available for the selected launch date.")
             else:
@@ -681,19 +689,18 @@ def main():
     
     else:
         # Welcome message when analysis hasn't started
-        st.markdown("""
-        <div style="text-align: center; padding: 3rem;">
-            <h2>👋 Welcome to Product Launch Performance Dashboard</h2>
+       st.markdown("""
+        <div style="text-align: center; padding: 1rem;">
             <p style="color: #666; font-size: 1.2rem; margin: 2rem;">
                 Select dates from the sidebar and click "Start Analysis" to begin.
             </p>
-            <div style="background: #f8f9fa; padding: 2rem; border-radius: 10px;">
-                <h4>📊 What you can analyze:</h4>
-                <ul style="list-style: none; padding: 0;">
-                    <li>✅ Product launch performance metrics</li>
-                    <li>✅ Category-wise new products sales breakdown</li>
-                    <li>✅ Individual product details by category with images</li>
-                    <li>✅ All products displayed within selected category</li>
+            <div style="background: #f8f9fa; padding: 2rem; border-radius: 10px; display: inline-block; text-align: left; min-width: 400px;">
+                <h4 style="text-align: center;">📊 What you can analyze:</h4>
+                <ul style="list-style: none; padding: 0; margin: 0 auto; display: inline-block;">
+                    <li style="margin-bottom: 0.5rem;">✅ Product launch performance metrics</li>
+                    <li style="margin-bottom: 0.5rem;">✅ Category-wise new products sales breakdown</li>
+                    <li style="margin-bottom: 0.5rem;">✅ Individual product details by category with images</li>
+                    <li style="margin-bottom: 0.5rem;">✅ All products displayed within selected category</li>
                 </ul>
             </div>
         </div>
