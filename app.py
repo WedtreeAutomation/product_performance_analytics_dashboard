@@ -409,11 +409,11 @@ def display_product_card_vertical(product_data, inventory_data, category):
             if image_url:
                 img = get_cached_image(image_url) # Utilizes cache wrapper
                 if img:
-                    st.image(img, use_container_width=True)
+                    st.image(img, width='stretch')
                 else:
-                    st.image("https://via.placeholder.com/300x300?text=No+Image", use_container_width=True)
+                    st.image("https://via.placeholder.com/300x300?text=No+Image", width='stretch')
             else:
-                st.image("https://via.placeholder.com/300x300?text=No+Image", use_container_width=True)
+                st.image("https://via.placeholder.com/300x300?text=No+Image", width='stretch')
         
         # Details & Metrics section
         st.markdown(f"**{title}**")
@@ -480,7 +480,7 @@ def main():
         st.markdown("---")
         
         # Start Analysis Button
-        start_analysis = st.button("🚀 Start Analysis", type="primary", use_container_width=True)
+        start_analysis = st.button("🚀 Start Analysis", type="primary", width='stretch')
         
         if start_analysis:
             st.session_state['analysis_started'] = True
@@ -596,7 +596,7 @@ def main():
                     # Display the table
                     st.dataframe(
                         summary_df,
-                        use_container_width=True,
+                        width='stretch',
                         hide_index=True,
                         column_config={
                             "Category": "Category",
@@ -632,7 +632,7 @@ def main():
                         barmode='group',
                         labels={'value': 'Count', 'variable': 'Metric'}
                     )
-                    st.plotly_chart(fig_summary, use_container_width=True)
+                    st.plotly_chart(fig_summary, width='stretch')
                 else:
                     st.warning("No new products were sold in the selected period.")
             else:
