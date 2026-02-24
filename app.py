@@ -1,877 +1,703 @@
 import streamlit as st
 import pandas as pd
+import plotly.express as px
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 import requests
 import numpy as np
 from azure.identity import ClientSecretCredential
+from datetime import datetime, timedelta
 import os
 from dotenv import load_dotenv
-from datetime import date, datetime, timedelta
-import plotly.express as px
-import plotly.graph_objects as go
-import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from PIL import Image
 from io import BytesIO
-import hashlib
+from PIL import Image
+import warnings
+warnings.filterwarnings('ignore')
 
-# =========================
-# App Config & UI Setup
-# =========================
+# Load environment variables
+load_dotenv()
+
+# Page configuration
 st.set_page_config(
-    page_title="Product Performance Analytics Pro", 
-    page_icon="📊", 
+    page_title="Product Launch Performance Dashboard",
+    page_icon="📊",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-# Custom CSS for enhanced styling
+# Custom CSS for better styling
 st.markdown("""
     <style>
     .main-header {
-        background: linear-gradient(90deg, #667eea 0%, #764ba2 100%);
-        padding: 2rem;
-        border-radius: 20px;
-        margin-bottom: 2rem;
-        color: white;
+        font-size: 2.5rem;
+        color: #1E88E5;
         text-align: center;
-        box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+        margin-bottom: 1rem;
+        padding: 1rem;
+        background: linear-gradient(90deg, #f8f9fa 0%, #e9ecef 100%);
+        border-radius: 10px;
+        box-shadow: 0 2px 4px rgba(0,0,0,0.1);
     }
-    
     .metric-card {
         background: white;
         padding: 1.5rem;
-        border-radius: 15px;
-        box-shadow: 0 4px 15px rgba(0,0,0,0.1);
+        border-radius: 10px;
+        box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+        text-align: center;
+        margin: 0.5rem 0;
         transition: transform 0.3s ease;
-        border-left: 5px solid #667eea;
     }
     .metric-card:hover {
         transform: translateY(-5px);
-        box-shadow: 0 6px 20px rgba(0,0,0,0.15);
+        box-shadow: 0 6px 12px rgba(0,0,0,0.15);
     }
-    
-    .section-header {
-        background: linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%);
-        padding: 1rem 2rem;
+    .metric-value {
+        font-size: 2.2rem;
+        font-weight: bold;
+        color: #1E88E5;
+    }
+    .metric-label {
+        font-size: 1rem;
+        color: #666;
+        margin-top: 0.5rem;
+    }
+    .metric-subtext {
+        font-size: 0.9rem;
+        color: #999;
+        margin-top: 0.25rem;
+        padding-top: 0.25rem;
+        border-top: 1px solid #eee;
+    }
+    .stAlert {
         border-radius: 10px;
-        margin: 2rem 0 1rem 0;
-        border-left: 8px solid #667eea;
-        font-weight: 600;
     }
-    
-    .category-stats {
-        background: white;
-        padding: 1.5rem;
-        border-radius: 15px;
-        box-shadow: 0 4px 15px rgba(0,0,0,0.1);
-        margin-bottom: 2rem;
-    }
-    
     .product-image {
-        width: 100%;
-        height: 200px;
-        object-fit: cover;
         border-radius: 10px;
-        box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        box-shadow: 0 4px 8px rgba(0,0,0,0.1);
     }
-    
+    .product-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+        gap: 1rem;
+        padding: 1rem 0;
+    }
     .product-card {
         background: white;
+        border-radius: 10px;
         padding: 1rem;
-        border-radius: 15px;
-        box-shadow: 0 4px 15px rgba(0,0,0,0.1);
-        margin-bottom: 1rem;
-        transition: transform 0.3s ease;
-        height: 100%;
+        box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        transition: transform 0.2s ease;
     }
     .product-card:hover {
-        transform: translateY(-5px);
-        box-shadow: 0 6px 20px rgba(0,0,0,0.15);
-    }
-    
-    .badge {
-        display: inline-block;
-        padding: 0.25rem 0.75rem;
-        border-radius: 20px;
-        font-size: 0.85rem;
-        font-weight: 600;
-    }
-    .badge-success {
-        background: #e8f5e9;
-        color: #2e7d32;
-    }
-    .badge-warning {
-        background: #fff3e0;
-        color: #f57c00;
-    }
-    .badge-info {
-        background: #e3f2fd;
-        color: #1976d2;
-    }
-    .category-pill {
-        display: inline-block;
-        padding: 0.5rem 1.5rem;
-        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-        color: white;
-        border-radius: 25px;
-        font-weight: 600;
-        margin: 0.5rem 0;
-    }
-    .loading-spinner {
-        display: inline-block;
-        width: 20px;
-        height: 20px;
-        border: 3px solid #f3f3f3;
-        border-top: 3px solid #667eea;
-        border-radius: 50%;
-        animation: spin 1s linear infinite;
-    }
-    @keyframes spin {
-        0% { transform: rotate(0deg); }
-        100% { transform: rotate(360deg); }
-    }
-    .stTextInput input {
-        border-radius: 25px;
-        border: 2px solid #667eea;
-        padding: 0.5rem 1rem;
-    }
-    .stSelectbox div[data-baseweb="select"] {
-        border-radius: 25px;
+        transform: translateY(-3px);
+        box-shadow: 0 4px 8px rgba(0,0,0,0.15);
     }
     </style>
 """, unsafe_allow_html=True)
 
-# =========================
-# Header Section
-# =========================
-st.markdown("""
-    <div class="main-header">
-        <h1 style="font-size: 3rem; margin-bottom: 0.5rem;">📊 Product Performance Analytics Pro</h1>
-        <p style="font-size: 1.2rem; opacity: 0.9;">Smart category-based product browsing with auto image loading</p>
-    </div>
-""", unsafe_allow_html=True)
+# Initialize credentials from environment variables
+@st.cache_resource
+def init_credentials():
+    """Initialize and cache Azure credentials"""
+    return {
+        "client_id": os.getenv("AZURE_CLIENT_ID"),
+        "client_secret": os.getenv("AZURE_CLIENT_SECRET"),
+        "tenant_id": os.getenv("AZURE_TENANT_ID"),
+        "endpoint": os.getenv("FABRIC_ENDPOINT"),
+        "shopify_endpoint": os.getenv("SHOPIFY_ENDPOINT"),
+        "shopify_token": os.getenv("SHOPIFY_ACCESS_TOKEN")
+    }
 
-# =========================
-# Load Environment Variables
-# =========================
-load_dotenv()
-
-CLIENT_ID = os.getenv("AZURE_CLIENT_ID", "").strip().strip("'").strip('"')
-CLIENT_SECRET = os.getenv("AZURE_CLIENT_SECRET", "").strip().strip("'").strip('"')
-TENANT_ID = os.getenv("AZURE_TENANT_ID", "").strip().strip("'").strip('"')
-FABRIC_ENDPOINT = os.getenv("FABRIC_ENDPOINT", "").strip().strip("'").strip('"')
-SHOPIFY_ENDPOINT = os.getenv("SHOPIFY_ENDPOINT", "").strip().strip("'").strip('"')
-SHOPIFY_TOKEN = os.getenv("SHOPIFY_ACCESS_TOKEN", "").strip().strip("'").strip('"')
-
-if not all([CLIENT_ID, CLIENT_SECRET, TENANT_ID, FABRIC_ENDPOINT, SHOPIFY_TOKEN]):
-    st.error("⚠️ Missing credentials in `.env` file.")
-    st.stop()
-
-# =========================
-# Caching Functions
-# =========================
-def get_fabric_token():
+# Initialize headers
+@st.cache_resource
+def get_headers(creds):
+    """Get authenticated headers for Fabric API"""
     try:
         credential = ClientSecretCredential(
-            TENANT_ID,
-            CLIENT_ID,
-            CLIENT_SECRET
+            creds["tenant_id"], 
+            creds["client_id"], 
+            creds["client_secret"]
         )
-        scope = "https://api.fabric.microsoft.com/.default"
-        token = credential.get_token(scope)
-        return token.token
+        scope = 'https://api.fabric.microsoft.com/.default'
+        token = credential.get_token(scope).token
+        
+        return {
+            'Authorization': f'Bearer {token}',
+            'Content-Type': 'application/json'
+        }
     except Exception as e:
         st.error(f"Authentication failed: {e}")
         return None
 
-def get_fabric_headers():
-    token = get_fabric_token()
-    if token:
-        return {'Authorization': f'Bearer {token}', 'Content-Type': 'application/json'}
-    return None
-
-@st.cache_data(ttl=3600, show_spinner=False)
-def fetch_single_product_image(sku):
-    """Fetch image for a single SKU"""
-    clean_sku = str(sku).strip()
-    query_str = f'sku:"{clean_sku}"'
-    
-    graphql_query = """
-    query getVariantOrProductBySKU($query: String!) {
-      productVariants(first: 1, query: $query) {
-        edges {
-          node {
-            image {
-              url
-              altText
-            }
-            product {
-              title
-              images(first: 1) {
-                edges {
-                  node {
-                    url
-                    altText
+def fetch_product_image_by_category(category, product_title=None):
+    """Fetch product image from Shopify using category and optional title"""
+    try:
+        creds = init_credentials()
+        
+        # Build query based on category and optional title
+        if product_title:
+            query_str = f"product_type:{category} AND title:{product_title}"
+        else:
+            query_str = f"product_type:{category}"
+        
+        # First try to get products by category
+        graphql_query = """
+        query getProductsByType($query: String!) {
+          products(first: 5, query: $query) {
+            edges {
+              node {
+                title
+                productType
+                images(first: 1) {
+                  edges {
+                    node {
+                      url
+                      altText
+                    }
+                  }
+                }
+                variants(first: 1) {
+                  edges {
+                    node {
+                      sku
+                      image {
+                        url
+                      }
+                    }
                   }
                 }
               }
             }
           }
         }
-      }
-    }
-    """
-    
-    headers = {
-        "Content-Type": "application/json",
-        "X-Shopify-Access-Token": SHOPIFY_TOKEN
-    }
-    
-    try:
+        """
+
+        headers = {
+            "Content-Type": "application/json",
+            "X-Shopify-Access-Token": creds["shopify_token"]
+        }
+
         response = requests.post(
-            SHOPIFY_ENDPOINT,
+            creds["shopify_endpoint"],
             headers=headers,
             json={"query": graphql_query, "variables": {"query": query_str}},
-            timeout=5
+            timeout=10
         )
+
         response.raise_for_status()
         data = response.json()
-        
-        if "errors" in data:
-            return {"sku": sku, "image_url": None, "alt_text": f"Product {sku}"}
 
-        variants = data.get("data", {}).get("productVariants", {}).get("edges", [])
+        if "errors" in data or not data.get("data", {}).get("products", {}).get("edges"):
+            return None
+
+        products = data["data"]["products"]["edges"]
         
-        if variants:
-            node = variants[0]["node"]
+        # Try to find an image from any product in this category
+        for product in products:
+            node = product["node"]
             
-            if node.get("image") and node["image"].get("url"):
-                return {
-                    "sku": sku,
-                    "image_url": node["image"]["url"],
-                    "alt_text": node["image"].get("altText") or node.get("product", {}).get("title", f"Product {sku}")
-                }
-                
-            product_images = node.get("product", {}).get("images", {}).get("edges", [])
-            if product_images:
-                img_node = product_images[0]["node"]
-                return {
-                    "sku": sku,
-                    "image_url": img_node.get("url"),
-                    "alt_text": img_node.get("altText") or node.get("product", {}).get("title", f"Product {sku}")
-                }
-                
-    except Exception:
-        pass
-                
-    return {"sku": sku, "image_url": None, "alt_text": f"Product {sku}"}
-
-@st.cache_data(ttl=3600, show_spinner=False)
-def get_shopify_images_batch(sku_list):
-    """Fetch images in parallel batches"""
-    if not sku_list:
-        return pd.DataFrame(columns=['sku', 'image_url', 'alt_text'])
-    
-    results = []
-    
-    with ThreadPoolExecutor(max_workers=5) as executor: 
-        future_to_sku = {executor.submit(fetch_single_product_image, sku): sku for sku in sku_list}
-        
-        completed = 0
-        for future in as_completed(future_to_sku):
-            try:
-                result = future.result(timeout=5)
-                results.append(result)
-            except Exception:
-                sku = future_to_sku[future]
-                results.append({"sku": sku, "image_url": None, "alt_text": f"Product {sku}"})
+            # Check variant images first
+            if node.get("variants", {}).get("edges"):
+                for variant in node["variants"]["edges"]:
+                    if variant["node"].get("image") and variant["node"]["image"].get("url"):
+                        return variant["node"]["image"]["url"]
             
-            completed += 1
-    
-    return pd.DataFrame(results)
+            # Check product images
+            if node.get("images", {}).get("edges"):
+                return node["images"]["edges"][0]["node"].get("url")
+        
+        return None
 
-@st.cache_data(ttl=300, show_spinner=False)
-def fetch_inventory_data(order_start, order_end, suffix, product_start=None, product_end=None):
-    """Fetch inventory data with caching"""
-    query = """
-    query GetInventory(
-      $orderStart: DateTime
-      $orderEnd: DateTime
-      $productStart: DateTime
-      $productEnd: DateTime
-    ) {
-      executesp_inventory(
-        OrderStartDate: $orderStart
-        OrderEndDate: $orderEnd
-        ProductStartDate: $productStart
-        ProductEndDate: $productEnd
-      ) {
-        product_id
-        sku
-        title
-        productType
-        totalInventory
-        quantity
-        status
-      }
-    }
-    """
-    
+    except Exception as e:
+        return None
+
+def load_image_from_url(url):
+    """Load image from URL and return PIL Image"""
     try:
-        headers = get_fabric_headers()
+        response = requests.get(url, timeout=10)
+        response.raise_for_status()
+        img = Image.open(BytesIO(response.content))
+        return img
+    except:
+        return None
+
+# Data fetching functions with caching
+@st.cache_data(ttl=300)
+def get_products(product_created_date):
+    """Fetch products launched on a specific date"""
+    try:
+        creds = init_credentials()
+        headers = get_headers(creds)
+        
         if not headers:
             return pd.DataFrame()
         
+        query = """
+        query GetProducts($ProductCreatedDate: DateTime) {
+            executesp_products(ProductCreatedDate: $ProductCreatedDate) {
+                product_id
+                sku
+                productType
+                product_created
+            }
+        }
+        """
+        
+        variables = {"ProductCreatedDate": product_created_date}
+        
+        response = requests.post(
+            creds["endpoint"],
+            headers=headers,
+            json={"query": query, "variables": variables}
+        )
+        
+        response.raise_for_status()
+        items = response.json().get("data", {}).get("executesp_products", [])
+        
+        if not items:
+            return pd.DataFrame(columns=["product_id", "sku", "productType", "product_created"])
+        
+        df = pd.DataFrame(items)
+        return df
+        
+    except Exception as e:
+        st.error(f"Error loading products: {e}")
+        return pd.DataFrame()
+
+@st.cache_data(ttl=300)
+def get_inventory_data(order_start, order_end):
+    """Fetch inventory and sales data"""
+    try:
+        creds = init_credentials()
+        headers = get_headers(creds)
+        
+        if not headers:
+            return pd.DataFrame()
+        
+        query = """
+        query GetInventory(
+            $orderStart: DateTime
+            $orderEnd: DateTime
+        ) {
+            executesp_inventory(
+                OrderStartDate: $orderStart
+                OrderEndDate: $orderEnd
+            ) {
+                product_id
+                sku
+                title
+                product_category
+                totalInventory
+                order_id
+                order_createdAt
+                product_createdAt
+                quantity
+            }
+        }
+        """
+        
         variables = {
             "orderStart": order_start,
-            "orderEnd": order_end,
-            "productStart": product_start,
-            "productEnd": product_end
+            "orderEnd": order_end
         }
         
         response = requests.post(
-            FABRIC_ENDPOINT,
+            creds["endpoint"],
             headers=headers,
-            json={"query": query, "variables": variables},
-            timeout=15
+            json={"query": query, "variables": variables}
         )
-        response.raise_for_status()
         
-        data = response.json()
-        items = data.get("data", {}).get("executesp_inventory", [])
+        response.raise_for_status()
+        items = response.json().get("data", {}).get("executesp_inventory", [])
         
         if not items:
-            return pd.DataFrame(columns=[
-                'product_id', 'sku', 'title', 'productType', 
-                'currentstock', f'qty_{suffix}', 'initial_quantity'
-            ])
+            return pd.DataFrame()
         
         df = pd.DataFrame(items)
         
-        # Remove cancelled orders
-        df = df[(df['status'].str.upper() != 'CANCELLED')]
-        df['totalInventory'] = df['totalInventory'].apply(lambda x: max(x, 0))
+        # Data processing
+        if 'totalInventory' in df.columns:
+            df['totalInventory'] = df['totalInventory'].apply(lambda x: max(x, 0) if pd.notna(x) else 0)
         
-        # Aggregate
-        result_df = (
-            df.groupby(
-                ['product_id', 'sku', 'title', 'productType', 'totalInventory'],
-                as_index=False
-            )
-            .agg(**{f'qty_{suffix}': ('quantity', 'sum')})
-        )
+        if 'product_createdAt' in df.columns:
+            df['product_createdAt'] = pd.to_datetime(df['product_createdAt'], errors='coerce')
         
-        result_df = result_df.rename(columns={'totalInventory': 'currentstock'})
-        result_df['initial_quantity'] = result_df['currentstock'] + result_df[f'qty_{suffix}']
+        if 'order_createdAt' in df.columns:
+            df['order_createdAt'] = pd.to_datetime(df['order_createdAt'], errors='coerce')
         
-        return result_df
+        if 'quantity' in df.columns:
+            df['quantity'] = pd.to_numeric(df['quantity'], errors='coerce').fillna(0)
+        
+        return df
         
     except Exception as e:
-        st.error(f"Error fetching data: {e}")
+        st.error(f"Error loading inventory: {e}")
         return pd.DataFrame()
 
-def format_number(num):
-    """Format numbers with K/M suffix"""
-    if num >= 1_000_000:
-        return f"{num/1_000_000:.1f}M"
-    elif num >= 1_000:
-        return f"{num/1_000:.1f}K"
+def calculate_metrics(launch_df, sales_df, launch_date):
+    """Calculate all required metrics"""
+    metrics = {}
+    
+    # Card 1: Products Launched
+    metrics['products_launched'] = len(launch_df) if not launch_df.empty else 0
+
+    categories_launched = launch_df['productType'].unique().tolist()
+    
+    # Card 2: Categories
+    metrics['categories'] = len(categories_launched) if not launch_df.empty else 0
+    
+    # Card 3: SKU Sold within Range
+    if not sales_df.empty and not launch_df.empty:
+        launch_dt = pd.to_datetime(launch_date).date()
+        
+        # New products (launched on selected date)
+        new_products = sales_df[
+            sales_df['product_createdAt'].dt.date == launch_dt
+        ]
+        new_skus_sold = new_products['sku'].nunique() if not new_products.empty else 0
+        
+        # Old products (existing before launch date)
+        old_products = sales_df[
+            (sales_df['product_createdAt'].dt.date < launch_dt) & (sales_df['product_category'].isin(categories_launched))
+        ]
+        old_skus_sold = old_products['sku'].nunique() if not old_products.empty else 0
+        
+        metrics['new_skus_sold'] = new_skus_sold
+        metrics['old_skus_sold'] = old_skus_sold
     else:
-        return str(num)
-
-# =========================
-# Sidebar UI
-# =========================
-with st.sidebar:
-    st.markdown("""
-        <div style="text-align: center; padding: 1rem; background: white; border-radius: 15px; margin-bottom: 1rem;">
-            <h3 style="color: #667eea;">⚙️ Fast Analytics</h3>
-        </div>
-    """, unsafe_allow_html=True)
+        metrics['new_skus_sold'] = 0
+        metrics['old_skus_sold'] = 0
     
-    # Quick date presets
-    date_preset = st.radio(
-        "📅 Quick Select",
-        ["Last 7 days", "Last 14 days", "Last 30 days", "Custom"],
-        horizontal=True
-    )
-    
-    if date_preset == "Custom":
-        col1, col2 = st.columns(2)
-        with col1:
-            product_launch_date = st.date_input(
-                "Launch Date",
-                value=date.today() - timedelta(days=14),
-                format="DD-MM-YYYY"
-            )
-        with col2:
-            analysis_end_date = st.date_input(
-                "End Date",
-                value=date.today(),
-                format="DD-MM-YYYY"
-            )
+    # Card 4: Quantity Sold within Range
+    if not sales_df.empty and not launch_df.empty:
+        launch_dt = pd.to_datetime(launch_date).date()
+        
+        # New products quantity
+        new_products = sales_df[
+            sales_df['product_createdAt'].dt.date == launch_dt
+        ]
+        new_products_qty = new_products['quantity'].sum() if not new_products.empty else 0
+        
+        # Old products quantity
+        old_products = sales_df[
+            (sales_df['product_createdAt'].dt.date < launch_dt) & (sales_df['product_category'].isin(categories_launched))
+        ]
+        old_products_qty = old_products['quantity'].sum() if not old_products.empty else 0
+        
+        metrics['new_qty_sold'] = int(new_products_qty)
+        metrics['old_qty_sold'] = int(old_products_qty)
     else:
-        days_map = {
-            "Last 7 days": 7,
-            "Last 14 days": 14,
-            "Last 30 days": 30
-        }
-        days = days_map[date_preset]
-        product_launch_date = date.today() - timedelta(days=days)
-        analysis_end_date = date.today()
+        metrics['new_qty_sold'] = 0
+        metrics['old_qty_sold'] = 0
     
-    st.divider()
-    
-    # Quick filters
-    st.markdown("### 🔍 Quick Filters")
-    
-    show_new_only = st.checkbox("✨ New Products Only", value=False)
-    min_perf = st.slider("📈 Min Performance %", 0, 100, 0, 5)
-    
-    st.divider()
-    
-    # Results per page
-    results_per_page = st.selectbox(
-        "📄 Results per page:",
-        options=[12, 24, 36, 48],
-        index=0,
-        help="Number of products to display per page"
-    )
-    
-    st.divider()
-    
-    # Analysis button
-    run_query = st.button(
-        "🚀 Run Analysis", 
-        type="primary", 
-        use_container_width=True
-    )
+    return metrics
 
-# Initialize session state
-if 'category_images_loaded' not in st.session_state:
-    st.session_state.category_images_loaded = {}
-if 'current_page' not in st.session_state:
-    st.session_state.current_page = 1
-if 'search_query' not in st.session_state:
-    st.session_state.search_query = ""
-if 'sort_option' not in st.session_state:
-    st.session_state.sort_option = "Performance (High to Low)"
-
-# =========================
-# Main Analysis
-# =========================
-if run_query:
-    with st.spinner("🔄 Loading data..."):
-        # Format dates
-        launch_start = product_launch_date.strftime("%Y-%m-%d") + "T00:00:00Z"
-        launch_end = product_launch_date.strftime("%Y-%m-%d") + "T23:59:59Z"
-        analysis_end = analysis_end_date.strftime("%Y-%m-%d") + "T23:59:59Z"
-        
-        # Fetch data
-        with st.status("📊 Fetching data...", expanded=True) as status:
-            st.write("⏳ Loading launch products...")
-            df_launch = fetch_inventory_data(
-                launch_start, analysis_end, "launch",
-                launch_start, launch_end
-            )
-            
-            st.write("⏳ Loading sales data...")
-            df_sales = fetch_inventory_data(
-                launch_start, analysis_end, "sale"
-            )
-            
-            status.update(label="✅ Data loaded!", state="complete")
-        
-        if df_launch.empty and df_sales.empty:
-            st.warning("No data found for selected dates.")
-            st.stop()
-        
-        # Process data
-        common_cols = ['product_id', 'sku', 'title', 'productType']
-        
-        # Find existing products
-        if not df_sales.empty and not df_launch.empty:
-            df_existing = (
-                df_sales.merge(
-                    df_launch[common_cols],
-                    on=common_cols,
-                    how='left',
-                    indicator=True
-                )
-                .query('_merge == "left_only"')
-                .drop(columns=['_merge'])
-            )
-        else:
-            df_existing = df_sales.copy() if not df_sales.empty else pd.DataFrame()
-        
-        # Process existing products
-        if not df_existing.empty:
-            df_existing_agg = (
-                df_existing
-                .groupby(['product_id', 'sku', 'title', 'productType'], as_index=False)
-                .agg({
-                    'initial_quantity': 'sum',
-                    'currentstock': 'sum'
-                })
-            )
-            df_existing_agg['total_sold'] = df_existing_agg['initial_quantity'] - df_existing_agg['currentstock']
-            df_existing_agg['performance_pct'] = np.where(
-                df_existing_agg['initial_quantity'] > 0,
-                (df_existing_agg['total_sold'] / df_existing_agg['initial_quantity']) * 100,
-                0.0
-            ).round(2)
-            df_existing_agg['category'] = 'Existing'
-        
-        # Process launch products
-        if not df_launch.empty:
-            df_launch_agg = df_launch.copy()
-            df_launch_agg['total_sold'] = df_launch_agg['qty_launch']
-            df_launch_agg['performance_pct'] = np.where(
-                df_launch_agg['initial_quantity'] > 0,
-                (df_launch_agg['total_sold'] / df_launch_agg['initial_quantity']) * 100,
-                0.0
-            ).round(2)
-            df_launch_agg['category'] = 'New'
-        
-        # Combine
-        dfs_to_concat = []
-        if not df_launch.empty:
-            dfs_to_concat.append(df_launch_agg[['product_id', 'sku', 'title', 'productType', 
-                                                'currentstock', 'total_sold', 'performance_pct', 'category']])
-        if not df_existing.empty:
-            dfs_to_concat.append(df_existing_agg[['product_id', 'sku', 'title', 'productType', 
-                                                 'currentstock', 'total_sold', 'performance_pct', 'category']])
-        
-        df_final = pd.concat(dfs_to_concat, ignore_index=True) if dfs_to_concat else pd.DataFrame()
-        
-        # Apply filters
-        if not df_final.empty:
-            df_final = df_final[df_final['performance_pct'] >= min_perf]
-            if show_new_only:
-                df_final = df_final[df_final['category'] == 'New']
-            
-            # Add performance rating
-            df_final['rating'] = pd.cut(
-                df_final['performance_pct'],
-                bins=[0, 25, 50, 75, 100],
-                labels=['Low', 'Medium', 'High', 'Excellent']
-            )
-            
-            # Store in session state
-            st.session_state['df'] = df_final
-            st.session_state['loaded'] = True
-            
-            # Store unique categories
-            if 'productType' in df_final.columns:
-                st.session_state['categories'] = sorted(df_final['productType'].dropna().unique().tolist())
-            else:
-                st.session_state['categories'] = []
-            
-            # Reset category image loading state
-            st.session_state.category_images_loaded = {}
-            st.session_state.current_page = 1
-
-# =========================
-# Dashboard Display
-# =========================
-if 'df' in st.session_state and st.session_state['loaded']:
-    df = st.session_state['df']
-    categories = st.session_state.get('categories', [])
+def display_product_card(product_data, inventory_data, category):
+    """Display a single product card with image and details"""
+    sku = product_data['sku']
+    title = product_data['title']
     
-    # Quick Stats
-    st.markdown("### 📊 Key Metrics")
-    col1, col2, col3, col4 = st.columns(4)
+    # Get sales data for this product
+    product_sales = inventory_data[
+        (inventory_data['sku'] == sku)
+    ]
+    
+    if not product_sales.empty:
+        total_sold = product_sales['quantity'].sum()
+        current_stock = product_sales['totalInventory'].iloc[0] if 'totalInventory' in product_sales.columns else 0
+        order_count = product_sales['order_id'].nunique()
+    else:
+        total_sold = 0
+        current_stock = 0
+        order_count = 0
+    
+    # Create product card with image
+    col1, col2 = st.columns([1, 2])
     
     with col1:
-        new_count = len(df[df['category']=='New']) if 'category' in df.columns else 0
-        existing_count = len(df[df['category']=='Existing']) if 'category' in df.columns else 0
-        
-        st.markdown(f"""
-            <div class="metric-card">
-                <h4 style="color:#666;">Products</h4>
-                <h2 style="color:#667eea;">{len(df)}</h2>
-                <p>New: {new_count} | Existing: {existing_count}</p>
-            </div>
-        """, unsafe_allow_html=True)
+        # Fetch and display product image by category
+        with st.spinner("🖼️"):
+            image_url = fetch_product_image_by_category(category, title)
+            if image_url:
+                img = load_image_from_url(image_url)
+                if img:
+                    st.image(img, caption=title, use_container_width=True)
+                else:
+                    st.image("https://via.placeholder.com/150x150?text=No+Image", 
+                            caption="Placeholder", use_container_width=True)
+            else:
+                st.image("https://via.placeholder.com/150x150?text=No+Image", 
+                        caption="No Image Available", use_container_width=True)
     
     with col2:
-        st.markdown(f"""
-            <div class="metric-card">
-                <h4 style="color:#666;">Inventory</h4>
-                <h2 style="color:#667eea;">{format_number(int(df['currentstock'].sum()))}</h2>
-                <p>Units in stock</p>
-            </div>
-        """, unsafe_allow_html=True)
-    
-    with col3:
-        st.markdown(f"""
-            <div class="metric-card">
-                <h4 style="color:#666;">Sold</h4>
-                <h2 style="color:#667eea;">{format_number(int(df['total_sold'].sum()))}</h2>
-                <p>Total units sold</p>
-            </div>
-        """, unsafe_allow_html=True)
-    
-    with col4:
-        avg_perf = df['performance_pct'].mean() if not df.empty else 0
-        color = "#4caf50" if avg_perf >= 50 else "#ff9800"
-        st.markdown(f"""
-            <div class="metric-card">
-                <h4 style="color:#666;">Avg Performance</h4>
-                <h2 style="color:{color};">{avg_perf:.1f}%</h2>
-                <p>Sales vs inventory</p>
-            </div>
-        """, unsafe_allow_html=True)
-    
-    st.divider()
-    
-    # Category Performance Summary (loads instantly)
-    if 'productType' in df.columns and not df['productType'].isna().all():
-        st.markdown("""
-            <div class="section-header">
-                <h3>📊 Category Performance Summary</h3>
-            </div>
-        """, unsafe_allow_html=True)
+        st.markdown(f"**SKU:** `{sku}`")
+        st.markdown(f"**Category:** {category}")
         
-        # Category stats - fast, no images needed
-        cat_stats = df.groupby('productType').agg({
-            'sku': 'count',
-            'total_sold': 'sum',
-            'currentstock': 'sum',
-            'performance_pct': 'mean'
-        }).round(2).reset_index()
-        cat_stats.columns = ['Category', 'Products', 'Units Sold', 'Current Stock', 'Avg Performance %']
-        cat_stats = cat_stats.sort_values('Avg Performance %', ascending=False)
+        # Display metrics in columns
+        mcol1, mcol2, mcol3 = st.columns(3)
+        mcol1.metric("Sold", f"{total_sold:,.0f}")
+        mcol2.metric("Stock", f"{current_stock:,.0f}")
+        mcol3.metric("Orders", f"{order_count}")
+    
+    st.markdown("---")
+
+def main():
+    # Header
+    st.markdown('<div class="main-header">📊 Product Launch Performance Analytics Dashboard</div>', 
+                unsafe_allow_html=True)
+    
+    # Sidebar
+    with st.sidebar:
+        st.image("https://via.placeholder.com/300x100/1E88E5/ffffff?text=Product+Analytics", 
+                 width=True)
         
-        # Display category stats table
-        st.dataframe(
-            cat_stats,
-            use_container_width=True,
-            hide_index=True,
-            column_config={
-                "Avg Performance %": st.column_config.ProgressColumn(
-                    "Avg Performance",
-                    format="%.1f%%",
-                    min_value=0,
-                    max_value=100
-                )
-            }
+        st.markdown("## 📅 Date Selection")
+        
+        # Date inputs
+        today = datetime.now()
+        
+        launch_date = st.date_input(
+            "Product Launch Date",
+            value=today - timedelta(days=5),
+            max_value=today
         )
         
-        st.divider()
-    
-    # Category Selection
-    if categories:
-        st.markdown("""
-            <div class="section-header">
-                <h3>🔍 Browse Products by Category</h3>
-            </div>
-        """, unsafe_allow_html=True)
+        col1, col2 = st.columns(2)
+        with col1:
+            analysis_start = st.date_input(
+                "Analysis Start",
+                value=launch_date,
+                max_value=today
+            )
+        with col2:
+            analysis_end = st.date_input(
+                "Analysis End",
+                value=today,
+                min_value=analysis_start,
+                max_value=today
+            )
         
-        # Category dropdown
-        selected_category = st.selectbox(
-            "Select a category to view products:",
-            options=["-- Select a category --"] + categories,
-            index=0,
-            key="category_selector"
+        st.markdown("---")
+        
+        # Start Analysis Button
+        start_analysis = st.button("🚀 Start Analysis", type="primary", use_container_width=True)
+        
+        if start_analysis:
+            st.session_state['analysis_started'] = True
+        
+        st.markdown("---")
+        st.markdown("### ℹ️ About")
+        st.info(
+            "This dashboard tracks product performance after launch, "
+            "analyzing sales metrics and product details."
         )
-        
-        # Only proceed if a category is selected
-        if selected_category != "-- Select a category --":
-            # Reset page number when category changes
-            if 'last_category' not in st.session_state or st.session_state.last_category != selected_category:
-                st.session_state.current_page = 1
-                st.session_state.search_query = ""
-                st.session_state.sort_option = "Performance (High to Low)"
-                st.session_state.last_category = selected_category
+    
+    # Initialize session state
+    if 'analysis_started' not in st.session_state:
+        st.session_state['analysis_started'] = False
+    
+    # Main content area - Only show if analysis started
+    if st.session_state['analysis_started']:
+        try:
+            # Format dates for API
+            launch_date_str = f"{launch_date}T00:00:00Z"
+            order_start_str = f"{analysis_start}T00:00:00Z"
+            order_end_str = f"{analysis_end}T23:59:59Z"
             
-            # Filter by category
-            df_category = df[df['productType'] == selected_category].copy()
+            # Load data with progress indicators
+            with st.spinner("📥 Fetching product data..."):
+                products_df = get_products(launch_date_str)
             
-            st.markdown(f"""
-                <div class="category-pill">
-                    📦 {selected_category} ({len(df_category)} products)
-                </div>
-            """, unsafe_allow_html=True)
+            with st.spinner("📥 Fetching inventory data..."):
+                inventory_df = get_inventory_data(order_start_str, order_end_str)
             
-            # Search and Sort in columns for better layout
-            col1, col2 = st.columns([3, 2])
+            # Calculate metrics
+            metrics = calculate_metrics(products_df, inventory_df, launch_date_str)
+            
+            # KPI Metrics Row
+            st.markdown("## 📈 Key Performance Indicators")
+            
+            # First row of metrics
+            col1, col2, col3, col4 = st.columns(4)
             
             with col1:
-                # Search within category
-                search_query = st.text_input(
-                    f"🔍 Search in {selected_category}", 
-                    value=st.session_state.search_query,
-                    placeholder="Product name or SKU...",
-                    key=f"search_{selected_category}"
-                )
-                st.session_state.search_query = search_query
+                st.markdown("""
+                <div class="metric-card">
+                    <div class="metric-value">{}</div>
+                    <div class="metric-label">🚀 Products Launched</div>
+                    <div class="metric-subtext">On selected date</div>
+                </div>
+                """.format(metrics['products_launched']), unsafe_allow_html=True)
             
             with col2:
-                # Sort options
-                sort_option = st.selectbox(
-                    "Sort by:",
-                    ["Performance (High to Low)", "Sold (High to Low)", "Name (A-Z)", "Stock (Low to High)"],
-                    index=["Performance (High to Low)", "Sold (High to Low)", "Name (A-Z)", "Stock (Low to High)"].index(st.session_state.sort_option),
-                    key=f"sort_{selected_category}"
-                )
-                st.session_state.sort_option = sort_option
+                st.markdown("""
+                <div class="metric-card">
+                    <div class="metric-value">{}</div>
+                    <div class="metric-label">📦 Categories</div>
+                    <div class="metric-subtext">Unique product categories</div>
+                </div>
+                """.format(metrics['categories']), unsafe_allow_html=True)
             
-            # Apply search filter
-            if search_query:
-                df_category = df_category[
-                    df_category['title'].str.contains(search_query, case=False, na=False) |
-                    df_category['sku'].str.contains(search_query, case=False, na=False)
-                ]
-                if len(df_category) == 0:
-                    st.warning(f"No products found matching '{search_query}'")
+            with col3:
+                st.markdown("""
+                <div class="metric-card">
+                    <div class="metric-value">{} | {}</div>
+                    <div class="metric-label">🔖 SKU Sold</div>
+                    <div class="metric-subtext">New: {} SKU | Old: {} SKU</div>
+                </div>
+                """.format(
+                    metrics['new_skus_sold'], 
+                    metrics['old_skus_sold'],
+                    metrics['new_skus_sold'],
+                    metrics['old_skus_sold']
+                ), unsafe_allow_html=True)
             
-            # Apply sorting
-            if sort_option == "Performance (High to Low)":
-                df_category = df_category.sort_values('performance_pct', ascending=False)
-            elif sort_option == "Sold (High to Low)":
-                df_category = df_category.sort_values('total_sold', ascending=False)
-            elif sort_option == "Name (A-Z)":
-                df_category = df_category.sort_values('title')
-            elif sort_option == "Stock (Low to High)":
-                df_category = df_category.sort_values('currentstock')
+            with col4:
+                st.markdown("""
+                <div class="metric-card">
+                    <div class="metric-value">{:,} | {:,}</div>
+                    <div class="metric-label">📊 Quantity Sold</div>
+                    <div class="metric-subtext">New: {:,} units | Old: {:,} units</div>
+                </div>
+                """.format(
+                    metrics['new_qty_sold'], 
+                    metrics['old_qty_sold'],
+                    metrics['new_qty_sold'],
+                    metrics['old_qty_sold']
+                ), unsafe_allow_html=True)
             
-            # Pagination
-            total_results = len(df_category)
-            total_pages = (total_results + results_per_page - 1) // results_per_page if total_results > 0 else 1
+            st.markdown("---")
             
-            if total_results > 0:
-                # Ensure current page is valid
-                if st.session_state.current_page > total_pages:
-                    st.session_state.current_page = 1
+            # Summary Table: Only new products with specified columns
+            st.markdown("## 📋 New Products Sales Summary by Category")
+            
+            if not inventory_df.empty and not products_df.empty:
+                # Get launch date for filtering
+                launch_dt = pd.to_datetime(launch_date_str).date()
                 
-                if total_pages > 1:
-                    col1, col2, col3, col4, col5 = st.columns([1, 1, 2, 1, 1])
-                    
-                    with col1:
-                        if st.button("⏮️ First", disabled=(st.session_state.current_page == 1), key=f"first_{selected_category}"):
-                            st.session_state.current_page = 1
-                            st.rerun()
-                    
-                    with col2:
-                        if st.button("◀ Prev", disabled=(st.session_state.current_page == 1), key=f"prev_{selected_category}"):
-                            st.session_state.current_page -= 1
-                            st.rerun()
-                    
-                    with col3:
-                        st.markdown(f"<center>Page {st.session_state.current_page} of {total_pages}</center>", unsafe_allow_html=True)
-                    
-                    with col4:
-                        if st.button("Next ▶", disabled=(st.session_state.current_page == total_pages), key=f"next_{selected_category}"):
-                            st.session_state.current_page += 1
-                            st.rerun()
-                    
-                    with col5:
-                        if st.button("⏭️ Last", disabled=(st.session_state.current_page == total_pages), key=f"last_{selected_category}"):
-                            st.session_state.current_page = total_pages
-                            st.rerun()
+                # Filter for new products only (launched on selected date)
+                new_products_df = inventory_df[
+                    inventory_df['product_createdAt'].dt.date == launch_dt
+                ].copy()
                 
-                # Get current page data
-                start_idx = (st.session_state.current_page - 1) * results_per_page
-                end_idx = min(start_idx + results_per_page, total_results)
-                df_page = df_category.iloc[start_idx:end_idx].copy()
-                
-                # Show product count
-                st.caption(f"Showing {start_idx + 1}-{end_idx} of {total_results} products")
-                
-                # AUTO-LOAD IMAGES for current page
-                if not df_page.empty:
-                    # Create a unique key for this category and page
-                    image_key = f"{selected_category}_page_{st.session_state.current_page}_search_{search_query}"
+                if not new_products_df.empty:
+                    # Create summary table with only the required columns
+                    summary_df = new_products_df.groupby('product_category').agg({
+                        'sku': 'nunique',  # Count of SKU Sold
+                        'quantity': 'sum'   # Quantity sold
+                    }).reset_index()
                     
-                    # Check if images for this page are already loaded
-                    if image_key not in st.session_state.category_images_loaded:
-                        with st.spinner(f"📸 Loading {len(df_page)} product images..."):
-                            sku_list = df_page['sku'].tolist()
-                            df_images = get_shopify_images_batch(sku_list)
-                            
-                            # Merge images
-                            df_page['sku'] = df_page['sku'].astype(str).str.strip()
-                            df_images['sku'] = df_images['sku'].astype(str).str.strip()
-                            df_images = df_images.drop_duplicates(subset=['sku'])
-                            df_page = df_page.merge(df_images, on='sku', how='left')
-                            
-                            # Mark as loaded
-                            st.session_state.category_images_loaded[image_key] = df_page
-                    else:
-                        # Use cached images
-                        df_page = st.session_state.category_images_loaded[image_key]
+                    # Rename columns as specified
+                    summary_df.columns = ['Category', 'Count of SKU Sold', 'Quantity sold']
                     
-                    # Display products in a 3-column grid
-                    cols = st.columns(3)
-                    for idx, (_, row) in enumerate(df_page.iterrows()):
-                        with cols[idx % 3]:
-                            with st.container():
-                                st.markdown('<div class="product-card">', unsafe_allow_html=True)
-                                
-                                # Display image if available
-                                image_url = row.get("image_url")
-                                
-                                if image_url and pd.notna(image_url):
-                                    try:
-                                        response = requests.get(image_url, timeout=5)
-                                        response.raise_for_status()
-                                        img = Image.open(BytesIO(response.content))
-                                        st.image(img, use_container_width=True)
-                                    except Exception:
-                                        st.markdown("""
-                                            <div style="width:100%;height:150px;background:#f0f2f6;border-radius:10px;
-                                                    display:flex;align-items:center;justify-content:center;color:#999;">
-                                                📷 Failed to Load
-                                            </div>
-                                        """, unsafe_allow_html=True)
-                                else:
-                                    st.markdown("""
-                                        <div style="width:100%;height:150px;background:#f0f2f6;border-radius:10px;
-                                                display:flex;align-items:center;justify-content:center;color:#999;">
-                                            📷 No Image Available
-                                        </div>
-                                    """, unsafe_allow_html=True)
-                                
-                                # Product info
-                                performance_color = "#4caf50" if row['performance_pct'] >= 50 else "#ff9800" if row['performance_pct'] >= 25 else "#f44336"
-                                
-                                st.markdown(f"""
-                                    <div style="padding: 10px 0;">
-                                        <strong>{row['title'][:40]}{'...' if len(row['title']) > 40 else ''}</strong><br>
-                                        <span style="color: #666; font-size: 0.8rem;">SKU: {row['sku']}</span><br>
-                                        <span style="color: {performance_color}; font-size: 1.3rem; font-weight: bold;">{row['performance_pct']:.1f}%</span>
-                                        <div style="display: flex; gap: 5px; margin-top: 5px; flex-wrap: wrap;">
-                                            <span class="badge badge-success">📦 {int(row['currentstock'])} in stock</span>
-                                            <span class="badge badge-warning">🛒 {int(row['total_sold'])} sold</span>
-                                            <span class="badge badge-info">{'✨ New' if row['category'] == 'New' else '📦 Existing'}</span>
-                                        </div>
-                                    </div>
-                                """, unsafe_allow_html=True)
-                                
-                                st.markdown('</div>', unsafe_allow_html=True)
+                    # Sort by Category for better readability
+                    summary_df = summary_df.sort_values('Category')
+                    
+                    # Display the table
+                    st.dataframe(
+                        summary_df,
+                        use_container_width=True,
+                        hide_index=True,
+                        column_config={
+                            "Category": "Category",
+                            "Count of SKU Sold": st.column_config.NumberColumn(
+                                "Count of SKU Sold", 
+                                format="%d",
+                                help="Number of unique SKUs sold"
+                            ),
+                            "Quantity sold": st.column_config.NumberColumn(
+                                "Quantity sold", 
+                                format="%d",
+                                help="Total quantity sold"
+                            )
+                        }
+                    )
+                    
+                    # Add a total row
+                    total_skus = summary_df['Count of SKU Sold'].sum()
+                    total_quantity = summary_df['Quantity sold'].sum()
+                    
+                    st.markdown(f"""
+                    <div style="text-align: right; padding: 1rem; background: #f0f2f6; border-radius: 5px; margin-top: 1rem;">
+                        <strong>Total:</strong> {total_skus} SKUs | {total_quantity:,.0f} units sold
+                    </div>
+                    """, unsafe_allow_html=True)
+                    
+                    # Visual representation for new products only
+                    fig_summary = px.bar(
+                        summary_df,
+                        x='Category',
+                        y=['Count of SKU Sold', 'Quantity sold'],
+                        title='New Products Sales by Category',
+                        barmode='group',
+                        labels={'value': 'Count', 'variable': 'Metric'}
+                    )
+                    st.plotly_chart(fig_summary, use_container_width=True)
+                else:
+                    st.warning("No new products were sold in the selected period.")
             else:
-                st.info(f"No products found in {selected_category} matching your search criteria.")
+                st.warning("No sales data available for the selected period.")
+            
+            st.markdown("---")
+            
+            # Product Details by Category - No nested dropdown
+            st.markdown("## 📦 Product Details by Category")
+            
+            if not products_df.empty and not inventory_df.empty:
+                # Get unique categories from launched products
+                launch_dt = pd.to_datetime(launch_date_str).date()
+                categories = products_df['productType'].unique().tolist()
+                
+                if categories:
+                    # Category selection dropdown
+                    selected_category = st.selectbox(
+                        "Choose a product category to view details:",
+                        options=categories
+                    )
+                    
+                    if selected_category:
+                        st.markdown(f"### Products in {selected_category}")
+                        
+                        # Get all products in this category (no further dropdown)
+                        category_products = inventory_df[
+                            (inventory_df['product_category'] == selected_category) &
+                            (inventory_df['product_createdAt'].dt.date == launch_dt)
+                        ][['sku', 'title']].drop_duplicates()
+                        
+                        if not category_products.empty:
+                            # Display all products in the category as cards
+                            for _, product in category_products.iterrows():
+                                display_product_card(product, inventory_df, selected_category)
+                        else:
+                            st.info(f"No products found in category: {selected_category}")
+                else:
+                    st.warning("No categories available for the selected launch date.")
+            else:
+                st.warning("No product data available.")
+        
+        except Exception as e:
+            st.error(f"An error occurred: {str(e)}")
+            st.exception(e)
     
-    # Export
-    st.divider()
-    
-    col1, col2, col3 = st.columns([1, 2, 1])
-    with col2:
-        # Remove image columns from export
-        df_export = df.drop(columns=['image_url', 'alt_text'], errors='ignore')
-        csv = df_export.to_csv(index=False).encode('utf-8')
-        st.download_button(
-            "📥 Download Complete Dataset",
-            csv,
-            f"products_{date.today()}.csv",
-            "text/csv",
-            use_container_width=True
-        )
+    else:
+        # Welcome message when analysis hasn't started
+        st.markdown("""
+        <div style="text-align: center; padding: 3rem;">
+            <h2>👋 Welcome to Product Launch Performance Dashboard</h2>
+            <p style="color: #666; font-size: 1.2rem; margin: 2rem;">
+                Select dates from the sidebar and click "Start Analysis" to begin.
+            </p>
+            <div style="background: #f8f9fa; padding: 2rem; border-radius: 10px;">
+                <h4>📊 What you can analyze:</h4>
+                <ul style="list-style: none; padding: 0;">
+                    <li>✅ Product launch performance metrics</li>
+                    <li>✅ Category-wise new products sales breakdown</li>
+                    <li>✅ Individual product details by category with images</li>
+                    <li>✅ All products displayed within selected category</li>
+                </ul>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
 
-# Footer
-st.markdown(f"""
-    <div style="text-align: center; margin-top: 2rem; padding: 1rem; background: #f8f9fa; border-radius: 10px;">
-        <p style="color: #666;">⚡ Fast Analytics | Auto-loads images per page | Last updated: {datetime.now().strftime("%H:%M:%S")}</p>
-    </div>
-""", unsafe_allow_html=True)
+if __name__ == "__main__":
+    main()
