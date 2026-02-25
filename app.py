@@ -443,6 +443,12 @@ def display_product_grid(products_df, inventory_df, category):
                 display_product_card_vertical(product_data, inventory_df, category)
 
 def main():
+    # Initialize session states
+    if 'is_logged_in' not in st.session_state:
+        st.session_state['is_logged_in'] = False
+    if 'analysis_started' not in st.session_state:
+        st.session_state['analysis_started'] = False
+
     # Header
     st.markdown('<div class="main-header">📊 Product Launch Performance Analytics Dashboard</div>', 
                 unsafe_allow_html=True)
@@ -451,52 +457,117 @@ def main():
     with st.sidebar:
         st.image("https://placehold.co/300x100/1E88E5/FFFFFF?text=Prashanti+Sarees", width=300)
 
-        st.markdown("## 📅 Date Selection")
+        # Login Logic
+        if not st.session_state['is_logged_in']:
+            st.markdown("## 🔐 Admin Login")
+            with st.form("login_form"):
+                email_input = st.text_input("Email")
+                password_input = st.text_input("Password", type="password")
+                submit_button = st.form_submit_button("Login", type="primary", width='stretch')
+                
+                if submit_button:
+                    # Fetch credentials from .env
+                    env_email = os.getenv("ADMIN_EMAIL")
+                    env_password = os.getenv("ADMIN_PASSWORD")
+                    
+                    if email_input == env_email and password_input == env_password:
+                        st.session_state['is_logged_in'] = True
+                        st.rerun() # Refresh the app state
+                    else:
+                        st.error("❌ Invalid email or password")
         
-        # Date inputs
-        today = datetime.now()
-        
-        launch_date = st.date_input(
-            "Product Launch Date",
-            value=today - timedelta(days=5),
-            max_value=today
-        )
-        
-        col1, col2 = st.columns(2)
-        with col1:
-            analysis_start = st.date_input(
-                "Analysis Start",
-                value=launch_date,
+        # If successfully logged in, show the actual sidebar controls
+        else:
+            st.success("✅ Logged in successfully")
+            st.markdown("## 📅 Date Selection")
+            
+            # Date inputs
+            today = datetime.now()
+            
+            launch_date = st.date_input(
+                "Product Launch Date",
+                value=today - timedelta(days=5),
                 max_value=today
             )
-        with col2:
-            analysis_end = st.date_input(
-                "Analysis End",
-                value=today,
-                min_value=analysis_start,
-                max_value=today
+            
+            col1, col2 = st.columns(2)
+            with col1:
+                analysis_start = st.date_input(
+                    "Analysis Start",
+                    value=launch_date,
+                    max_value=today
+                )
+            with col2:
+                analysis_end = st.date_input(
+                    "Analysis End",
+                    value=today,
+                    min_value=analysis_start,
+                    max_value=today
+                )
+            
+            st.markdown("---")
+            
+            # Start Analysis Button
+            start_analysis = st.button("🚀 Start Analysis", type="primary", width='stretch')
+            
+            if start_analysis:
+                st.session_state['analysis_started'] = True
+            
+            st.markdown("---")
+            st.markdown("### ℹ️ About")
+            st.info(
+                "This dashboard tracks product performance after launch, "
+                "analyzing sales metrics and product details."
             )
-        
-        st.markdown("---")
-        
-        # Start Analysis Button
-        start_analysis = st.button("🚀 Start Analysis", type="primary", width='stretch')
-        
-        if start_analysis:
-            st.session_state['analysis_started'] = True
-        
-        st.markdown("---")
-        st.markdown("### ℹ️ About")
-        st.info(
-            "This dashboard tracks product performance after launch, "
-            "analyzing sales metrics and product details."
-        )
+            
+            # Logout option at the very bottom of the sidebar
+            st.markdown("---")
+            if st.button("🚪 Logout", width='stretch'):
+                st.session_state['is_logged_in'] = False
+                st.session_state['analysis_started'] = False
+                st.rerun()
     
-    # Initialize session state
-    if 'analysis_started' not in st.session_state:
-        st.session_state['analysis_started'] = False
-    
-    # Main content area - Only show if analysis started
+    # Main content area - Check Authentication first
+    if not st.session_state['is_logged_in']:
+        # Block access and show welcome/login prompt
+        st.markdown("""
+        <div style="text-align: center; padding: 1rem;">
+            <p style="color: #666; font-size: 1.2rem; margin: 2rem;">
+                Please <b>log in</b> from the sidebar to access the dashboard.
+            </p>
+            <div style="background: #f8f9fa; padding: 2rem; border-radius: 10px; display: inline-block; text-align: left; min-width: 400px;">
+                <h4 style="text-align: center;">📊 What you can analyze:</h4>
+                <ul style="list-style: none; padding: 0; margin: 0 auto; display: inline-block;">
+                    <li style="margin-bottom: 0.5rem;">✅ Product launch performance metrics</li>
+                    <li style="margin-bottom: 0.5rem;">✅ Category-wise new products sales breakdown</li>
+                    <li style="margin-bottom: 0.5rem;">✅ Individual product details by category with images</li>
+                    <li style="margin-bottom: 0.5rem;">✅ All products displayed within selected category</li>
+                </ul>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+        return # Stop execution of the rest of the app until logged in
+
+    # If Logged In, but analysis hasn't started yet
+    if not st.session_state['analysis_started']:
+       st.markdown("""
+        <div style="text-align: center; padding: 1rem;">
+            <p style="color: #666; font-size: 1.2rem; margin: 2rem;">
+                Select dates from the sidebar and click "Start Analysis" to begin.
+            </p>
+            <div style="background: #f8f9fa; padding: 2rem; border-radius: 10px; display: inline-block; text-align: left; min-width: 400px;">
+                <h4 style="text-align: center;">📊 What you can analyze:</h4>
+                <ul style="list-style: none; padding: 0; margin: 0 auto; display: inline-block;">
+                    <li style="margin-bottom: 0.5rem;">✅ Product launch performance metrics</li>
+                    <li style="margin-bottom: 0.5rem;">✅ Category-wise new products sales breakdown</li>
+                    <li style="margin-bottom: 0.5rem;">✅ Individual product details by category with images</li>
+                    <li style="margin-bottom: 0.5rem;">✅ All products displayed within selected category</li>
+                </ul>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+    # If Logged In AND Analysis has started
     if st.session_state['analysis_started']:
         try:
             # Format dates for API
@@ -686,25 +757,6 @@ def main():
         except Exception as e:
             st.error(f"An error occurred: {str(e)}")
             st.exception(e)
-    
-    else:
-        # Welcome message when analysis hasn't started
-       st.markdown("""
-        <div style="text-align: center; padding: 1rem;">
-            <p style="color: #666; font-size: 1.2rem; margin: 2rem;">
-                Select dates from the sidebar and click "Start Analysis" to begin.
-            </p>
-            <div style="background: #f8f9fa; padding: 2rem; border-radius: 10px; display: inline-block; text-align: left; min-width: 400px;">
-                <h4 style="text-align: center;">📊 What you can analyze:</h4>
-                <ul style="list-style: none; padding: 0; margin: 0 auto; display: inline-block;">
-                    <li style="margin-bottom: 0.5rem;">✅ Product launch performance metrics</li>
-                    <li style="margin-bottom: 0.5rem;">✅ Category-wise new products sales breakdown</li>
-                    <li style="margin-bottom: 0.5rem;">✅ Individual product details by category with images</li>
-                    <li style="margin-bottom: 0.5rem;">✅ All products displayed within selected category</li>
-                </ul>
-            </div>
-        </div>
-        """, unsafe_allow_html=True)
 
 if __name__ == "__main__":
     main()
