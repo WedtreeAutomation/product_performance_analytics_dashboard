@@ -12,6 +12,8 @@ from dotenv import load_dotenv
 from io import BytesIO
 from PIL import Image
 import warnings
+import hashlib
+
 warnings.filterwarnings('ignore')
 
 # Load environment variables
@@ -95,7 +97,13 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-# Removed caching to prevent API/Token errors
+# Helper function to generate a secure session token
+def get_auth_token():
+    env_email = os.getenv("ADMIN_EMAIL", "")
+    env_password = os.getenv("ADMIN_PASSWORD", "")
+    # Create a hash of the credentials to safely store in the URL
+    return hashlib.sha256(f"{env_email}::{env_password}".encode()).hexdigest()
+
 def init_credentials():
     """Initialize Azure credentials"""
     return {
@@ -107,7 +115,6 @@ def init_credentials():
         "shopify_token": os.getenv("SHOPIFY_ACCESS_TOKEN")
     }
 
-# Removed caching to prevent token expiration/hash errors
 def get_headers(creds):
     """Get authenticated headers for Fabric API"""
     try:
@@ -127,20 +134,17 @@ def get_headers(creds):
         st.error(f"Authentication failed: {e}")
         return None
 
-# Kept caching ONLY for the Shopify API to keep image resolution lightning fast
 @st.cache_data(ttl=3600, show_spinner=False)
 def fetch_product_image_by_category(category, product_title=None):
     """Fetch product image from Shopify using category and optional title"""
     try:
         creds = init_credentials()
         
-        # Build query based on category and optional title
         if product_title:
             query_str = f"product_type:{category} AND title:{product_title}"
         else:
             query_str = f"product_type:{category}"
         
-        # First try to get products by category
         graphql_query = """
         query getProductsByType($query: String!) {
           products(first: 5, query: $query) {
@@ -192,17 +196,14 @@ def fetch_product_image_by_category(category, product_title=None):
 
         products = data["data"]["products"]["edges"]
         
-        # Try to find an image from any product in this category
         for product in products:
             node = product["node"]
             
-            # Check variant images first
             if node.get("variants", {}).get("edges"):
                 for variant in node["variants"]["edges"]:
                     if variant["node"].get("image") and variant["node"]["image"].get("url"):
                         return variant["node"]["image"]["url"]
             
-            # Check product images
             if node.get("images", {}).get("edges"):
                 return node["images"]["edges"][0]["node"].get("url")
         
@@ -211,7 +212,6 @@ def fetch_product_image_by_category(category, product_title=None):
     except Exception as e:
         return None
 
-# UNTOUCHED original method as requested
 def load_image_from_url(url):
     """Load image from URL and return PIL Image"""
     try:
@@ -222,13 +222,10 @@ def load_image_from_url(url):
     except:
         return None
 
-# Wrapper to cache the PIL image in memory. 
-# Leaves your original load_image_from_url function completely unmodified while giving massive speed boosts.
 @st.cache_resource(show_spinner=False)
 def get_cached_image(url):
     return load_image_from_url(url)
 
-# Removed caching from Fabric endpoints
 def get_products(product_created_date):
     """Fetch products launched on a specific date"""
     try:
@@ -270,7 +267,6 @@ def get_products(product_created_date):
         st.error(f"Error loading products: {e}")
         return pd.DataFrame()
 
-# Removed caching from Fabric endpoints
 def get_inventory_data(order_start, order_end):
     """Fetch inventory and sales data"""
     try:
@@ -321,7 +317,6 @@ def get_inventory_data(order_start, order_end):
         
         df = pd.DataFrame(items)
         
-        # Data processing
         if 'totalInventory' in df.columns:
             df['totalInventory'] = df['totalInventory'].apply(lambda x: max(x, 0) if pd.notna(x) else 0)
         
@@ -344,26 +339,17 @@ def calculate_metrics(launch_df, sales_df, launch_date):
     """Calculate all required metrics"""
     metrics = {}
     
-    # Card 1: Products Launched
     metrics['products_launched'] = len(launch_df) if not launch_df.empty else 0
-
     categories_launched = launch_df['productType'].unique().tolist() if not launch_df.empty else []
-    
-    # Card 2: Categories
     metrics['categories'] = len(categories_launched)
     
-    # Card 3 & 4: SKU and Quantity Sold within Range
     if not sales_df.empty and not launch_df.empty:
         launch_dt = pd.to_datetime(launch_date).date()
         
-        # New products (launched on selected date)
-        new_products = sales_df[
-            sales_df['product_createdAt'].dt.date == launch_dt
-        ]
+        new_products = sales_df[sales_df['product_createdAt'].dt.date == launch_dt]
         new_skus_sold = new_products['sku'].nunique() if not new_products.empty else 0
         new_products_qty = new_products['quantity'].sum() if not new_products.empty else 0
         
-        # Old products (existing before launch date)
         old_products = sales_df[
             (sales_df['product_createdAt'].dt.date < launch_dt) & 
             (sales_df['product_category'].isin(categories_launched))
@@ -388,10 +374,7 @@ def display_product_card_vertical(product_data, inventory_data, category):
     sku = product_data['sku']
     title = product_data['title']
     
-    # Get sales data for this product
-    product_sales = inventory_data[
-        (inventory_data['sku'] == sku)
-    ]
+    product_sales = inventory_data[inventory_data['sku'] == sku]
     
     if not product_sales.empty:
         total_sold = product_sales['quantity'].sum()
@@ -403,11 +386,10 @@ def display_product_card_vertical(product_data, inventory_data, category):
         order_count = 0
     
     with st.container(border=True):
-        # Image rendering section
         with st.spinner("🖼️"):
             image_url = fetch_product_image_by_category(category, title)
             if image_url:
-                img = get_cached_image(image_url) # Utilizes cache wrapper
+                img = get_cached_image(image_url) 
                 if img:
                     st.image(img, width='stretch')
                 else:
@@ -415,7 +397,6 @@ def display_product_card_vertical(product_data, inventory_data, category):
             else:
                 st.image("https://via.placeholder.com/300x300?text=No+Image", width='stretch')
         
-        # Details & Metrics section
         st.markdown(f"**{title}**")
         st.caption(f"SKU: `{sku}`")
         
@@ -430,10 +411,8 @@ def display_product_grid(products_df, inventory_df, category):
         st.info("No products found in this classification.")
         return
 
-    # Convert to list to easily chunk items
     product_list = products_df[['sku', 'title']].drop_duplicates().to_dict('records')
     
-    # Iterate in chunks of 3
     for i in range(0, len(product_list), 3):
         cols = st.columns(3)
         chunk = product_list[i:i+3]
@@ -443,9 +422,14 @@ def display_product_grid(products_df, inventory_df, category):
                 display_product_card_vertical(product_data, inventory_df, category)
 
 def main():
-    # Initialize session states
-    if 'is_logged_in' not in st.session_state:
+    expected_token = get_auth_token()
+
+    # Session Management: Check Query Params on load to persist login across hard refreshes
+    if st.query_params.get("session") == expected_token:
+        st.session_state['is_logged_in'] = True
+    elif 'is_logged_in' not in st.session_state:
         st.session_state['is_logged_in'] = False
+
     if 'analysis_started' not in st.session_state:
         st.session_state['analysis_started'] = False
 
@@ -455,7 +439,7 @@ def main():
     
     # Sidebar
     with st.sidebar:
-        st.image("https://placehold.co/300x100/1E88E5/FFFFFF?text=Prashanti+Sarees", width=300)
+        st.image("https://placehold.co/300x100/1E88E5/FFFFFF?text=Prashanti+Sarees", width='stretch')
 
         # Login Logic
         if not st.session_state['is_logged_in']:
@@ -466,22 +450,21 @@ def main():
                 submit_button = st.form_submit_button("Login", type="primary", width='stretch')
                 
                 if submit_button:
-                    # Fetch credentials from .env
                     env_email = os.getenv("ADMIN_EMAIL")
                     env_password = os.getenv("ADMIN_PASSWORD")
                     
                     if email_input == env_email and password_input == env_password:
                         st.session_state['is_logged_in'] = True
-                        st.rerun() # Refresh the app state
+                        st.query_params["session"] = expected_token # Set token in URL
+                        st.rerun() 
                     else:
                         st.error("❌ Invalid email or password")
         
-        # If successfully logged in, show the actual sidebar controls
+        # Logged In Controls
         else:
             st.success("✅ Logged in successfully")
             st.markdown("## 📅 Date Selection")
             
-            # Date inputs
             today = datetime.now()
             
             launch_date = st.date_input(
@@ -507,7 +490,6 @@ def main():
             
             st.markdown("---")
             
-            # Start Analysis Button
             start_analysis = st.button("🚀 Start Analysis", type="primary", width='stretch')
             
             if start_analysis:
@@ -520,16 +502,16 @@ def main():
                 "analyzing sales metrics and product details."
             )
             
-            # Logout option at the very bottom of the sidebar
             st.markdown("---")
             if st.button("🚪 Logout", width='stretch'):
                 st.session_state['is_logged_in'] = False
                 st.session_state['analysis_started'] = False
+                if "session" in st.query_params:
+                    del st.query_params["session"] # Clear token from URL
                 st.rerun()
     
-    # Main content area - Check Authentication first
+    # Main content area - Authentication Gate
     if not st.session_state['is_logged_in']:
-        # Block access and show welcome/login prompt
         st.markdown("""
         <div style="text-align: center; padding: 1rem;">
             <p style="color: #666; font-size: 1.2rem; margin: 2rem;">
@@ -546,9 +528,9 @@ def main():
             </div>
         </div>
         """, unsafe_allow_html=True)
-        return # Stop execution of the rest of the app until logged in
+        return
 
-    # If Logged In, but analysis hasn't started yet
+    # Logged In, pending analysis start
     if not st.session_state['analysis_started']:
        st.markdown("""
         <div style="text-align: center; padding: 1rem;">
@@ -567,28 +549,23 @@ def main():
         </div>
         """, unsafe_allow_html=True)
 
-    # If Logged In AND Analysis has started
+    # Logged In and Analysis Started
     if st.session_state['analysis_started']:
         try:
-            # Format dates for API
             launch_date_str = f"{launch_date}T00:00:00Z"
             order_start_str = f"{analysis_start}T00:00:00Z"
             order_end_str = f"{analysis_end}T23:59:59Z"
             
-            # Load data with progress indicators
             with st.spinner("📥 Fetching product data..."):
                 products_df = get_products(launch_date_str)
             
             with st.spinner("📥 Fetching inventory data..."):
                 inventory_df = get_inventory_data(order_start_str, order_end_str)
             
-            # Calculate metrics
             metrics = calculate_metrics(products_df, inventory_df, launch_date_str)
             
-            # KPI Metrics Row
             st.markdown("## 📈 Key Performance Indicators")
             
-            # First row of metrics
             col1, col2, col3, col4 = st.columns(4)
             
             with col1:
@@ -639,32 +616,24 @@ def main():
             
             st.markdown("---")
             
-            # Summary Table: Only new products with specified columns
             st.markdown("## 📋 New Products Sales Summary by Category")
             
             if not inventory_df.empty and not products_df.empty:
-                # Get launch date for filtering
                 launch_dt = pd.to_datetime(launch_date_str).date()
                 
-                # Filter for new products only (launched on selected date)
                 new_products_df = inventory_df[
                     inventory_df['product_createdAt'].dt.date == launch_dt
                 ].copy()
                 
                 if not new_products_df.empty:
-                    # Create summary table with only the required columns
                     summary_df = new_products_df.groupby('product_category').agg({
-                        'sku': 'nunique',  # Count of SKU Sold
-                        'quantity': 'sum'   # Quantity sold
+                        'sku': 'nunique',
+                        'quantity': 'sum'
                     }).reset_index()
                     
-                    # Rename columns as specified
                     summary_df.columns = ['Category', 'Count of SKU Sold', 'Quantity sold']
-                    
-                    # Sort by Category for better readability
                     summary_df = summary_df.sort_values('Category')
                     
-                    # Display the table
                     st.dataframe(
                         summary_df,
                         width='stretch',
@@ -684,7 +653,6 @@ def main():
                         }
                     )
                     
-                    # Add a total row
                     total_skus = summary_df['Count of SKU Sold'].sum()
                     total_quantity = summary_df['Quantity sold'].sum()
                     
@@ -694,7 +662,6 @@ def main():
                     </div>
                     """, unsafe_allow_html=True)
                     
-                    # Visual representation for new products only
                     fig_summary = px.bar(
                         summary_df,
                         x='Category',
@@ -711,16 +678,13 @@ def main():
             
             st.markdown("---")
             
-            # Product Details by Category
             st.markdown("## 📦 Product Details by Category")
             
             if not products_df.empty and not inventory_df.empty:
-                # Get unique categories from launched products
                 launch_dt = pd.to_datetime(launch_date_str).date()
                 categories = products_df['productType'].unique().tolist()
                 
                 if categories:
-                    # Category selection dropdown
                     selected_category = st.selectbox(
                         "Choose a product category to view details:",
                         options=categories
@@ -729,7 +693,6 @@ def main():
                     if selected_category:
                         st.markdown(f"### Visual Directory: {selected_category}")
                         
-                        # Separate New vs Old products chronologically
                         category_products = inventory_df[
                             inventory_df['product_category'] == selected_category
                         ]
@@ -741,11 +704,9 @@ def main():
                             category_products['product_createdAt'].dt.date < launch_dt
                         ]
                         
-                        # Render Grid UI: New Products First
                         st.markdown("#### ✨ Newly Launched Products")
                         display_product_grid(new_cat_products, inventory_df, selected_category)
                         
-                        # Render Grid UI: Old Products Second
                         st.markdown("---")
                         st.markdown("#### 🕰️ Legacy / Existing Products")
                         display_product_grid(old_cat_products, inventory_df, selected_category)
