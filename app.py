@@ -617,21 +617,55 @@ def main():
             st.markdown("---")
             
             st.markdown("## 📋 New Products Sales Summary by Category")
-            
+
             if not inventory_df.empty and not products_df.empty:
                 launch_dt = pd.to_datetime(launch_date_str).date()
+                categories = products_df['productType'].unique().tolist()
                 
+                # Create separate dataframes for new and old products
                 new_products_df = inventory_df[
                     inventory_df['product_createdAt'].dt.date == launch_dt
                 ].copy()
                 
+                old_products_df = inventory_df[
+                    (inventory_df['product_createdAt'].dt.date < launch_dt) & 
+                    (inventory_df['product_category'].isin(categories))
+                ].copy()
+                
+                # Create summary for new products
                 if not new_products_df.empty:
-                    summary_df = new_products_df.groupby('product_category').agg({
+                    new_summary_df = new_products_df.groupby('product_category').agg({
                         'sku': 'nunique',
                         'quantity': 'sum'
                     }).reset_index()
+                    new_summary_df.columns = ['Category', 'Count of New SKU Sold', 'New Quantity sold']
+                else:
+                    new_summary_df = pd.DataFrame(columns=['Category', 'Count of New SKU Sold', 'New Quantity sold'])
+                
+                # Create summary for old products
+                if not old_products_df.empty:
+                    old_summary_df = old_products_df.groupby('product_category').agg({
+                        'sku': 'nunique',
+                        'quantity': 'sum'
+                    }).reset_index()
+                    old_summary_df.columns = ['Category', 'Count of Old SKU Sold', 'Old Quantity sold']
+                else:
+                    old_summary_df = pd.DataFrame(columns=['Category', 'Count of Old SKU Sold', 'Old Quantity sold'])
+                
+                # Merge the summaries
+                if not new_summary_df.empty or not old_summary_df.empty:
+                    summary_df = pd.merge(
+                        new_summary_df, 
+                        old_summary_df, 
+                        on='Category', 
+                        how='outer'
+                    ).fillna(0)
                     
-                    summary_df.columns = ['Category', 'Count of SKU Sold', 'Quantity sold']
+                    # Convert to integers for display
+                    for col in ['Count of New SKU Sold', 'New Quantity sold', 'Count of Old SKU Sold', 'Old Quantity sold']:
+                        if col in summary_df.columns:
+                            summary_df[col] = summary_df[col].astype(int)
+                    
                     summary_df = summary_df.sort_values('Category')
                     
                     st.dataframe(
@@ -640,39 +674,97 @@ def main():
                         hide_index=True,
                         column_config={
                             "Category": "Category",
-                            "Count of SKU Sold": st.column_config.NumberColumn(
-                                "Count of SKU Sold", 
+                            "Count of New SKU Sold": st.column_config.NumberColumn(
+                                "Count of New SKU Sold", 
                                 format="%d",
-                                help="Number of unique SKUs sold"
+                                help="Number of unique new SKUs sold"
                             ),
-                            "Quantity sold": st.column_config.NumberColumn(
-                                "Quantity sold", 
+                            "New Quantity sold": st.column_config.NumberColumn(
+                                "New Quantity sold", 
                                 format="%d",
-                                help="Total quantity sold"
+                                help="Total quantity of new products sold"
+                            ),
+                            "Count of Old SKU Sold": st.column_config.NumberColumn(
+                                "Count of Old SKU Sold", 
+                                format="%d",
+                                help="Number of unique existing SKUs sold"
+                            ),
+                            "Old Quantity sold": st.column_config.NumberColumn(
+                                "Old Quantity sold", 
+                                format="%d",
+                                help="Total quantity of existing products sold"
                             )
                         }
                     )
                     
-                    total_skus = summary_df['Count of SKU Sold'].sum()
-                    total_quantity = summary_df['Quantity sold'].sum()
+                    # Calculate totals
+                    total_new_skus = summary_df['Count of New SKU Sold'].sum()
+                    total_new_qty = summary_df['New Quantity sold'].sum()
+                    total_old_skus = summary_df['Count of Old SKU Sold'].sum()
+                    total_old_qty = summary_df['Old Quantity sold'].sum()
                     
                     st.markdown(f"""
                     <div style="text-align: right; padding: 1rem; background: #f0f2f6; border-radius: 5px; margin-top: 1rem;">
-                        <strong>Total:</strong> {total_skus} SKUs | {total_quantity:,.0f} units sold
+                        <strong>New Products:</strong> {total_new_skus} SKUs | {total_new_qty:,.0f} units sold<br>
+                        <strong>Existing Products:</strong> {total_old_skus} SKUs | {total_old_qty:,.0f} units sold
                     </div>
                     """, unsafe_allow_html=True)
                     
-                    fig_summary = px.bar(
-                        summary_df,
-                        x='Category',
-                        y=['Count of SKU Sold', 'Quantity sold'],
-                        title='New Products Sales by Category',
+                    # Create grouped bar chart
+                    fig_summary = go.Figure()
+                    
+                    fig_summary.add_trace(go.Bar(
+                        name='New SKUs',
+                        x=summary_df['Category'],
+                        y=summary_df['Count of New SKU Sold'],
+                        marker_color='#1E88E5'
+                    ))
+                    
+                    fig_summary.add_trace(go.Bar(
+                        name='Existing SKUs',
+                        x=summary_df['Category'],
+                        y=summary_df['Count of Old SKU Sold'],
+                        marker_color='#FFA726'
+                    ))
+                    
+                    fig_summary.update_layout(
+                        title='SKU Count Comparison by Category',
                         barmode='group',
-                        labels={'value': 'Count', 'variable': 'Metric'}
+                        xaxis_title='Category',
+                        yaxis_title='Number of SKUs',
+                        hovermode='x unified'
                     )
+                    
                     st.plotly_chart(fig_summary, width='stretch')
+                    
+                    # Quantity chart
+                    fig_qty = go.Figure()
+                    
+                    fig_qty.add_trace(go.Bar(
+                        name='New Quantity',
+                        x=summary_df['Category'],
+                        y=summary_df['New Quantity sold'],
+                        marker_color='#1E88E5'
+                    ))
+                    
+                    fig_qty.add_trace(go.Bar(
+                        name='Existing Quantity',
+                        x=summary_df['Category'],
+                        y=summary_df['Old Quantity sold'],
+                        marker_color='#FFA726'
+                    ))
+                    
+                    fig_qty.update_layout(
+                        title='Quantity Sold Comparison by Category',
+                        barmode='group',
+                        xaxis_title='Category',
+                        yaxis_title='Quantity Sold',
+                        hovermode='x unified'
+                    )
+                    
+                    st.plotly_chart(fig_qty, width='stretch')
                 else:
-                    st.warning("No new products were sold in the selected period.")
+                    st.warning("No sales data available for the selected period.")
             else:
                 st.warning("No sales data available for the selected period.")
             
