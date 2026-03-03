@@ -1,4 +1,5 @@
-import streamlit as st
+
+​import streamlit as st
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
@@ -226,18 +227,19 @@ def load_image_from_url(url):
 def get_cached_image(url):
     return load_image_from_url(url)
 
-def get_products(product_created_date):
-    """Fetch products launched on a specific date"""
+def get_products(product_created_date, comparison_type="EQUALS"):
+    """
+    Fetch products launched on or before a specific date.
+    comparison_type: "EQUALS" or "BEFORE"
+    """
     try:
         creds = init_credentials()
         headers = get_headers(creds)
-        
-        if not headers:
-            return pd.DataFrame()
+        if not headers: return pd.DataFrame()
         
         query = """
-        query GetProducts($ProductCreatedDate: DateTime) {
-            executesp_products(ProductCreatedDate: $ProductCreatedDate) {
+        query GetProducts($date: DateTime, $type: String) {
+            executesp_products_new(ProductCreatedDate: $date, ComparisonType: $type) {
                 product_id
                 sku
                 productType
@@ -245,45 +247,47 @@ def get_products(product_created_date):
             }
         }
         """
-        
-        variables = {"ProductCreatedDate": product_created_date}
+        variables = {"date": product_created_date, "type": comparison_type}
         
         response = requests.post(
             creds["endpoint"],
             headers=headers,
             json={"query": query, "variables": variables}
         )
-        
         response.raise_for_status()
-        items = response.json().get("data", {}).get("executesp_products", [])
+        items = response.json().get("data", {}).get("executesp_products_new", [])
         
-        if not items:
-            return pd.DataFrame(columns=["product_id", "sku", "productType", "product_created"])
-        
-        df = pd.DataFrame(items)
-        return df
+        return pd.DataFrame(items) if items else pd.DataFrame(columns=["product_id", "sku", "productType", "product_created"])
         
     except Exception as e:
         st.error(f"Error loading products: {e}")
         return pd.DataFrame()
 
-def get_inventory_data(order_start, order_end):
-    """Fetch inventory and sales data"""
+def get_inventory_data(order_start, order_end, product_start=None, product_end=None, categories=None):
+    """
+    Fetch inventory and sales data with optional product age and category filters.
+    - categories: can be a list ['Saree', 'Dress'] or a comma-separated string.
+    """
     try:
         creds = init_credentials()
         headers = get_headers(creds)
-        
-        if not headers:
-            return pd.DataFrame()
+        if not headers: return pd.DataFrame()
+
+        # Handle category list conversion for SQL STRING_SPLIT
+        category_str = ",".join(categories) if isinstance(categories, list) else categories
         
         query = """
         query GetInventory(
-            $orderStart: DateTime
-            $orderEnd: DateTime
+            $oStart: DateTime, $oEnd: DateTime, 
+            $pStart: DateTime, $pEnd: DateTime, 
+            $cats: String
         ) {
-            executesp_inventory(
-                OrderStartDate: $orderStart
-                OrderEndDate: $orderEnd
+            executesp_inventory_new(
+                OrderStartDate: $oStart
+                OrderEndDate: $oEnd
+                ProductStartDate: $pStart
+                ProductEndDate: $pEnd
+                ProductCategories: $cats
             ) {
                 product_id
                 sku
@@ -299,8 +303,11 @@ def get_inventory_data(order_start, order_end):
         """
         
         variables = {
-            "orderStart": order_start,
-            "orderEnd": order_end
+            "oStart": order_start,
+            "oEnd": order_end,
+            "pStart": product_start,
+            "pEnd": product_end,
+            "cats": category_str
         }
         
         response = requests.post(
@@ -308,27 +315,25 @@ def get_inventory_data(order_start, order_end):
             headers=headers,
             json={"query": query, "variables": variables}
         )
-        
         response.raise_for_status()
-        items = response.json().get("data", {}).get("executesp_inventory", [])
+        items = response.json().get("data", {}).get("executesp_inventory_new", [])
         
         if not items:
             return pd.DataFrame()
         
         df = pd.DataFrame(items)
         
+        # Data Cleaning
         if 'totalInventory' in df.columns:
             df['totalInventory'] = df['totalInventory'].apply(lambda x: max(x, 0) if pd.notna(x) else 0)
         
-        if 'product_createdAt' in df.columns:
-            df['product_createdAt'] = pd.to_datetime(df['product_createdAt'], errors='coerce')
-        
-        if 'order_createdAt' in df.columns:
-            df['order_createdAt'] = pd.to_datetime(df['order_createdAt'], errors='coerce')
+        for col in ['product_createdAt', 'order_createdAt']:
+            if col in df.columns:
+                df[col] = pd.to_datetime(df[col], errors='coerce')
         
         if 'quantity' in df.columns:
             df['quantity'] = pd.to_numeric(df['quantity'], errors='coerce').fillna(0)
-        
+            
         return df
         
     except Exception as e:
@@ -555,12 +560,27 @@ def main():
             launch_date_str = f"{launch_date}T00:00:00Z"
             order_start_str = f"{analysis_start}T00:00:00Z"
             order_end_str = f"{analysis_end}T23:59:59Z"
+            today_str = f"{datetime.now().date()}T23:59:59Z"
             
             with st.spinner("📥 Fetching product data..."):
-                products_df = get_products(launch_date_str)
-            
-            with st.spinner("📥 Fetching inventory data..."):
+                # 1. Get products launched EXACTLY on launch date
+                products_df = get_products(launch_date_str, comparison_type="EQUALS")
+
+                # Identify categories involved in this launch for efficient filtering
+                launch_categories = products_df['productType'].unique().tolist() if not products_df.empty else []
+
+            with st.spinner("📥 Fetching filtered inventory data..."):
+                # 2. Fetch inventory for the specific analysis window
                 inventory_df = get_inventory_data(order_start_str, order_end_str)
+                print(inventory_df)
+                # 3. OPTIMIZED: Fetch all-time sales ONLY for categories launched on the specific date
+                all_time_sales = pd.DataFrame()
+                if launch_categories:
+                    all_time_sales = get_inventory_data(
+                        order_start=None, 
+                        order_end=today_str, 
+                        categories=launch_categories
+                    )
             
             metrics = calculate_metrics(products_df, inventory_df, launch_date_str)
             
@@ -616,192 +636,191 @@ def main():
             
             st.markdown("---")
             
-            st.markdown("## 📋 New Products Sales Summary by Category")
+            # Helper function for Initial Quantity logic
+            def get_initial_qty_summary(sales_all_df, product_filter_df):
+                if sales_all_df.empty or product_filter_df.empty:
+                    return pd.DataFrame(columns=['product_category', 'sku_initial'])
+                
+                relevant_skus = product_filter_df['sku'].unique()
+                sku_subset = sales_all_df[sales_all_df['sku'].isin(relevant_skus)]
+                
+                if sku_subset.empty:
+                     return pd.DataFrame(columns=['product_category', 'sku_initial'])
 
+                sku_level = sku_subset.groupby(['product_category', 'sku']).agg({
+                    'quantity': 'sum',
+                    'totalInventory': 'last'
+                }).reset_index()
+                
+                sku_level['sku_initial'] = sku_level['quantity'] + sku_level['totalInventory']
+                x = sku_level.groupby('product_category')['sku_initial'].sum().reset_index()
+                print(x[x['product_category']=='Antique Jhumka'])
+                return sku_level.groupby('product_category')['sku_initial'].sum().reset_index()
+
+            # --- START DATA PROCESSING ---
             if not inventory_df.empty and not products_df.empty:
                 launch_dt = pd.to_datetime(launch_date_str).date()
-                categories = products_df['productType'].unique().tolist()
                 
-                # Create separate dataframes for new and old products
-                new_products_df = inventory_df[
-                    inventory_df['product_createdAt'].dt.date == launch_dt
-                ].copy()
+                # Logic for New Products
+                new_products_df = inventory_df[inventory_df['product_createdAt'].dt.date == launch_dt].copy()
                 
+                # Logic for Old Products
                 old_products_df = inventory_df[
                     (inventory_df['product_createdAt'].dt.date < launch_dt) & 
-                    (inventory_df['product_category'].isin(categories))
+                    (inventory_df['product_category'].isin(launch_categories))
                 ].copy()
                 
-                # Create summary for new products
-                if not new_products_df.empty:
-                    new_summary_df = new_products_df.groupby('product_category').agg({
-                        'sku': 'nunique',
-                        'quantity': 'sum'
-                    }).reset_index()
-                    new_summary_df.columns = ['Category', 'Count of New SKU Sold', 'New Quantity sold']
-                else:
-                    new_summary_df = pd.DataFrame(columns=['Category', 'Count of New SKU Sold', 'New Quantity sold'])
+                # Build Summaries
+                new_summary_df = new_products_df.groupby('product_category').agg({
+                    'sku': 'nunique', 'quantity': 'sum'
+                }).reset_index().rename(columns={'sku': 'Count of New SKU Sold', 'quantity': 'New Quantity sold'})
+
+                old_summary_df = old_products_df.groupby('product_category').agg({
+                    'sku': 'nunique', 'quantity': 'sum'
+                }).reset_index().rename(columns={'sku': 'Count of Old SKU Sold', 'quantity': 'Old Quantity sold'})
+
+                new_init_df = get_initial_qty_summary(all_time_sales, new_products_df).rename(columns={'sku_initial': 'Initial Qty New'})
+                old_init_df = get_initial_qty_summary(all_time_sales, old_products_df).rename(columns={'sku_initial': 'Initial Qty Old'})
+
+                # Final Merge for the Summary Table
+                summary_df = pd.merge(new_summary_df, old_summary_df, on='product_category', how='outer')
+                summary_df = pd.merge(summary_df, new_init_df, on='product_category', how='outer')
+                summary_df = pd.merge(summary_df, old_init_df, on='product_category', how='outer').fillna(0)
                 
-                # Create summary for old products
-                if not old_products_df.empty:
-                    old_summary_df = old_products_df.groupby('product_category').agg({
-                        'sku': 'nunique',
-                        'quantity': 'sum'
-                    }).reset_index()
-                    old_summary_df.columns = ['Category', 'Count of Old SKU Sold', 'Old Quantity sold']
-                else:
-                    old_summary_df = pd.DataFrame(columns=['Category', 'Count of Old SKU Sold', 'Old Quantity sold'])
+                # --- NEW CALCULATIONS & REARRANGEMENT ---
+                # Calculate Sales Percentages
+                summary_df['Sales % of New SKUs'] = (summary_df['New Quantity sold'] / summary_df['Initial Qty New'] * 100).fillna(0)
+                summary_df['Sales % of Old SKUs'] = (summary_df['Old Quantity sold'] / summary_df['Initial Qty Old'] * 100).fillna(0)
+
+                # Rename for clarity to match your requested order
+                summary_df.rename(columns={
+                    'product_category': 'Categories'
+                    # 'Count of New SKU Sold': 'Count of New SKUs Sold',
+                    # 'New Quantity sold': 'New SKUs Qty Sold',
+                    # 'Initial Qty New': 'New SKUs Initial Qty',
+                    # 'Count of Old SKU Sold': 'Count of Old SKUs Sold',
+                    # 'Old Quantity sold': 'Old SKUs Qty Sold',
+                    # 'Initial Qty Old': 'Old SKUs Initial Qty'
+                }, inplace=True)
+
+                # Reorder Columns
+                column_order = [
+                    'Categories', 
+                    'Count of New SKU Sold', 'New Quantity sold', 'Initial Qty New', 'Sales % of New SKUs',
+                    'Count of Old SKU Sold', 'Old Quantity sold', 'Initial Qty Old', 'Sales % of Old SKUs'
+                ]
+                summary_df = summary_df[column_order]
                 
-                # Merge the summaries
-                if not new_summary_df.empty or not old_summary_df.empty:
-                    summary_df = pd.merge(
-                        new_summary_df, 
-                        old_summary_df, 
-                        on='Category', 
-                        how='outer'
-                    ).fillna(0)
-                    
-                    # Convert to integers for display
-                    for col in ['Count of New SKU Sold', 'New Quantity sold', 'Count of Old SKU Sold', 'Old Quantity sold']:
-                        if col in summary_df.columns:
-                            summary_df[col] = summary_df[col].astype(int)
-                    
-                    summary_df = summary_df.sort_values('Category')
-                    
-                    st.dataframe(
-                        summary_df,
-                        width='stretch',
-                        hide_index=True,
-                        column_config={
-                            "Category": "Category",
-                            "Count of New SKU Sold": st.column_config.NumberColumn(
-                                "Count of New SKU Sold", 
-                                format="%d",
-                                help="Number of unique new SKUs sold"
-                            ),
-                            "New Quantity sold": st.column_config.NumberColumn(
-                                "New Quantity sold", 
-                                format="%d",
-                                help="Total quantity of new products sold"
-                            ),
-                            "Count of Old SKU Sold": st.column_config.NumberColumn(
-                                "Count of Old SKU Sold", 
-                                format="%d",
-                                help="Number of unique existing SKUs sold"
-                            ),
-                            "Old Quantity sold": st.column_config.NumberColumn(
-                                "Old Quantity sold", 
-                                format="%d",
-                                help="Total quantity of existing products sold"
-                            )
-                        }
-                    )
-                    
-                    # Calculate totals
-                    total_new_skus = summary_df['Count of New SKU Sold'].sum()
-                    total_new_qty = summary_df['New Quantity sold'].sum()
-                    total_old_skus = summary_df['Count of Old SKU Sold'].sum()
-                    total_old_qty = summary_df['Old Quantity sold'].sum()
-                    
-                    st.markdown(f"""
-                    <div style="text-align: right; padding: 1rem; background: #f0f2f6; border-radius: 5px; margin-top: 1rem;">
-                        <strong>New Products:</strong> {total_new_skus} SKUs | {total_new_qty:,.0f} units sold<br>
-                        <strong>Existing Products:</strong> {total_old_skus} SKUs | {total_old_qty:,.0f} units sold
-                    </div>
-                    """, unsafe_allow_html=True)
-                    
-                    # Create grouped bar chart
-                    fig_summary = go.Figure()
-                    
-                    fig_summary.add_trace(go.Bar(
-                        name='New SKUs',
-                        x=summary_df['Category'],
-                        y=summary_df['Count of New SKU Sold'],
-                        marker_color='#1E88E5'
-                    ))
-                    
-                    fig_summary.add_trace(go.Bar(
-                        name='Existing SKUs',
-                        x=summary_df['Category'],
-                        y=summary_df['Count of Old SKU Sold'],
-                        marker_color='#FFA726'
-                    ))
-                    
-                    fig_summary.update_layout(
-                        title='SKU Count Comparison by Category',
-                        barmode='group',
-                        xaxis_title='Category',
-                        yaxis_title='Number of SKUs',
-                        hovermode='x unified'
-                    )
-                    
-                    st.plotly_chart(fig_summary, width='stretch')
-                    
-                    # Quantity chart
-                    fig_qty = go.Figure()
-                    
-                    fig_qty.add_trace(go.Bar(
-                        name='New Quantity',
-                        x=summary_df['Category'],
-                        y=summary_df['New Quantity sold'],
-                        marker_color='#1E88E5'
-                    ))
-                    
-                    fig_qty.add_trace(go.Bar(
-                        name='Existing Quantity',
-                        x=summary_df['Category'],
-                        y=summary_df['Old Quantity sold'],
-                        marker_color='#FFA726'
-                    ))
-                    
-                    fig_qty.update_layout(
-                        title='Quantity Sold Comparison by Category',
-                        barmode='group',
-                        xaxis_title='Category',
-                        yaxis_title='Quantity Sold',
-                        hovermode='x unified'
-                    )
-                    
-                    st.plotly_chart(fig_qty, width='stretch')
-                else:
-                    st.warning("No sales data available for the selected period.")
-            else:
-                st.warning("No sales data available for the selected period.")
-            
-            st.markdown("---")
-            
-            st.markdown("## 📦 Product Details by Category")
-            
-            if not products_df.empty and not inventory_df.empty:
-                launch_dt = pd.to_datetime(launch_date_str).date()
-                categories = products_df['productType'].unique().tolist()
+                st.markdown("## 📋 New Products Sales Summary by Category")
                 
-                if categories:
-                    selected_category = st.selectbox(
-                        "Choose a product category to view details:",
-                        options=categories
-                    )
+                # Render Table
+                st.dataframe(
+                    summary_df,
+                    width='stretch',
+                    hide_index=True,
+                    column_config={
+                        "Categories": "Category",
+                        "Initial Qty New": st.column_config.NumberColumn("Initial Qty (New)", format="%d"),
+                        "New Quantity sold": st.column_config.NumberColumn("New Qty Sold", format="%d"),
+                        "Sales % of New SKUs": st.column_config.NumberColumn("Sales % (New)", format="%.2f%%"),
+                        "Initial Qty Old": st.column_config.NumberColumn("Initial Qty (Old)", format="%d"),
+                        "Old Quantity sold": st.column_config.NumberColumn("Old Qty Sold", format="%d"),
+                        "Sales % of Old SKUs": st.column_config.NumberColumn("Sales % (Old)", format="%.2f%%"),
+                    }
+                )
                     
-                    if selected_category:
-                        st.markdown(f"### Visual Directory: {selected_category}")
+                # --- CALCULATE TOTALS (Moved inside the IF block) ---
+                total_new_skus = summary_df['Count of New SKU Sold'].sum()
+                total_new_qty = summary_df['New Quantity sold'].sum()
+                total_old_skus = summary_df['Count of Old SKU Sold'].sum()
+                total_old_qty = summary_df['Old Quantity sold'].sum()
+                
+                st.markdown(f"""
+                <div style="text-align: right; padding: 1rem; background: #f0f2f6; border-radius: 5px; margin-top: 1rem;">
+                    <strong>New Products:</strong> {total_new_skus} SKUs | {total_new_qty:,.0f} units sold<br>
+                    <strong>Existing Products:</strong> {total_old_skus} SKUs | {total_old_qty:,.0f} units sold
+                </div>
+                """, unsafe_allow_html=True)
+                
+                # --- CHARTS ---
+                fig_summary = go.Figure()
+                fig_summary.add_trace(go.Bar(
+                    name='New SKUs',
+                    x=summary_df['Categories'],
+                    y=summary_df['Count of New SKU Sold'],
+                    marker_color='#1E88E5'
+                ))
+                fig_summary.add_trace(go.Bar(
+                    name='Existing SKUs',
+                    x=summary_df['Categories'],
+                    y=summary_df['Count of Old SKU Sold'],
+                    marker_color='#FFA726'
+                ))
+                
+                fig_summary.update_layout(
+                    title='SKU Count Comparison by Category',
+                    barmode='group',
+                    xaxis_title='Category',
+                    yaxis_title='Number of SKUs',
+                    hovermode='x unified'
+                )
+                st.plotly_chart(fig_summary, width='stretch')
+                
+                fig_qty = go.Figure()
+                fig_qty.add_trace(go.Bar(
+                    name='New Quantity',
+                    x=summary_df['Categories'],
+                    y=summary_df['New Quantity sold'],
+                    marker_color='#1E88E5'
+                ))
+                fig_qty.add_trace(go.Bar(
+                    name='Existing Quantity',
+                    x=summary_df['Categories'],
+                    y=summary_df['Old Quantity sold'],
+                    marker_color='#FFA726'
+                ))
+                
+                fig_qty.update_layout(
+                    title='Quantity Sold Comparison by Category',
+                    barmode='group',
+                    xaxis_title='Category',
+                    yaxis_title='Quantity Sold',
+                    hovermode='x unified'
+                )
+                st.plotly_chart(fig_qty, width='stretch')
+            
+                st.markdown("## 📦 Product Details by Category")
+                
+                if not products_df.empty and not inventory_df.empty:
+                    launch_dt = pd.to_datetime(launch_date_str).date()
+                    categories = products_df['productType'].unique().tolist()
+                    
+                    if categories:
+                        selected_category = st.selectbox(
+                            "Choose a product category to view details:",
+                            options=categories
+                        )
                         
-                        category_products = inventory_df[
-                            inventory_df['product_category'] == selected_category
-                        ]
-                        
-                        new_cat_products = category_products[
-                            category_products['product_createdAt'].dt.date == launch_dt
-                        ]
-                        old_cat_products = category_products[
-                            category_products['product_createdAt'].dt.date < launch_dt
-                        ]
-                        
-                        st.markdown("#### ✨ Newly Launched Products")
-                        display_product_grid(new_cat_products, inventory_df, selected_category)
-                        
-                        st.markdown("---")
-                        st.markdown("#### 🕰️ Legacy / Existing Products")
-                        display_product_grid(old_cat_products, inventory_df, selected_category)
+                        if selected_category:
+                            st.markdown(f"### Visual Directory: {selected_category}")
+                            
+                            category_products = inventory_df[
+                                inventory_df['product_category'] == selected_category
+                            ]
+                            
+                            new_cat_products = category_products[
+                                category_products['product_createdAt'].dt.date == launch_dt
+                            ]
+                            old_cat_products = category_products[
+                                category_products['product_createdAt'].dt.date < launch_dt
+                            ]
+                            
+                            st.markdown("#### ✨ Newly Launched Products")
+                            display_product_grid(new_cat_products, inventory_df, selected_category)
+                            
+                            st.markdown("---")
+                            st.markdown("#### 🕰️ Legacy / Existing Products")
+                            display_product_grid(old_cat_products, inventory_df, selected_category)
                 else:
                     st.warning("No categories available for the selected launch date.")
             else:
