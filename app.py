@@ -13,6 +13,10 @@ from io import BytesIO
 from PIL import Image
 import warnings
 import hashlib
+import concurrent.futures
+from functools import lru_cache
+import time
+import threading
 
 warnings.filterwarnings('ignore')
 
@@ -94,14 +98,83 @@ st.markdown("""
         transform: translateY(-3px);
         box-shadow: 0 4px 8px rgba(0,0,0,0.15);
     }
+    .pagination-controls {
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        gap: 1rem;
+        margin: 2rem 0;
+        padding: 1rem;
+        background: #f8f9fa;
+        border-radius: 10px;
+    }
+    .pagination-info {
+        font-size: 1rem;
+        color: #666;
+        font-weight: 500;
+    }
+    .image-container {
+        position: relative;
+        width: 100%;
+        padding-top: 100%; /* 1:1 Aspect Ratio */
+        overflow: hidden;
+        border-radius: 10px;
+        background: #f0f2f6;
+    }
+    .image-container img {
+        position: absolute;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+    }
+    .loading-placeholder {
+        position: absolute;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100%;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background: #f0f2f6;
+        color: #666;
+        font-size: 0.9rem;
+    }
     </style>
 """, unsafe_allow_html=True)
+
+# Initialize a thread-local cache for images
+_image_cache = {}
+_cache_lock = threading.Lock()
+
+class ImageCache:
+    """Thread-safe image cache with size limit"""
+    def __init__(self, max_size=100):
+        self.cache = {}
+        self.max_size = max_size
+        self.lock = threading.Lock()
+    
+    def get(self, key):
+        with self.lock:
+            return self.cache.get(key)
+    
+    def set(self, key, value):
+        with self.lock:
+            if len(self.cache) >= self.max_size:
+                # Remove oldest item (simple FIFO)
+                oldest_key = next(iter(self.cache))
+                del self.cache[oldest_key]
+            self.cache[key] = value
+
+# Global image cache
+image_cache = ImageCache(max_size=200)
 
 # Helper function to generate a secure session token
 def get_auth_token():
     env_email = os.getenv("ADMIN_EMAIL", "")
     env_password = os.getenv("ADMIN_PASSWORD", "")
-    # Create a hash of the credentials to safely store in the URL
     return hashlib.sha256(f"{env_email}::{env_password}".encode()).hexdigest()
 
 def init_credentials():
@@ -135,35 +208,37 @@ def get_headers(creds):
         return None
 
 @st.cache_data(ttl=3600, show_spinner=False)
-def fetch_product_image_by_category(category, product_title=None):
-    """Fetch product image from Shopify using category and optional title"""
+def fetch_product_images_batch(category, product_titles):
+    """
+    Fetch multiple product images in a single batch API call
+    """
+    if not product_titles:
+        return {}
+    
     try:
         creds = init_credentials()
         
-        if product_title:
-            query_str = f"product_type:{category} AND title:{product_title}"
-        else:
-            query_str = f"product_type:{category}"
+        # Build a more efficient query to get multiple products at once
+        # Create a search query that combines all titles
+        title_queries = [f'title:"{title}"' for title in product_titles[:10]]  # Limit to 10 per query
+        combined_query = f"product_type:{category} AND ({' OR '.join(title_queries)})"
         
         graphql_query = """
-        query getProductsByType($query: String!) {
-          products(first: 5, query: $query) {
+        query getProductsBatch($query: String!) {
+          products(first: 25, query: $query) {
             edges {
               node {
                 title
-                productType
                 images(first: 1) {
                   edges {
                     node {
                       url
-                      altText
                     }
                   }
                 }
                 variants(first: 1) {
                   edges {
                     node {
-                      sku
                       image {
                         url
                       }
@@ -184,47 +259,69 @@ def fetch_product_image_by_category(category, product_title=None):
         response = requests.post(
             creds["shopify_endpoint"],
             headers=headers,
-            json={"query": graphql_query, "variables": {"query": query_str}},
-            timeout=10
+            json={"query": graphql_query, "variables": {"query": combined_query}},
+            timeout=15
         )
 
         response.raise_for_status()
         data = response.json()
 
         if "errors" in data or not data.get("data", {}).get("products", {}).get("edges"):
-            return None
+            return {}
 
-        products = data["data"]["products"]["edges"]
-        
-        for product in products:
+        # Map titles to image URLs
+        image_map = {}
+        for product in data["data"]["products"]["edges"]:
             node = product["node"]
+            title = node["title"]
             
+            # Try to get image from variants first
             if node.get("variants", {}).get("edges"):
                 for variant in node["variants"]["edges"]:
                     if variant["node"].get("image") and variant["node"]["image"].get("url"):
-                        return variant["node"]["image"]["url"]
+                        image_map[title] = variant["node"]["image"]["url"]
+                        break
             
-            if node.get("images", {}).get("edges"):
-                return node["images"]["edges"][0]["node"].get("url")
+            # If no variant image, try product images
+            if title not in image_map and node.get("images", {}).get("edges"):
+                image_map[title] = node["images"]["edges"][0]["node"]["url"]
         
-        return None
+        return image_map
 
     except Exception as e:
-        return None
+        return {}
 
-def load_image_from_url(url):
-    """Load image from URL and return PIL Image"""
+def load_image_from_url_optimized(url, max_size=(300, 300)):
+    """Load image from URL with size optimization"""
+    cache_key = f"{url}_{max_size}"
+    
+    # Check memory cache first
+    cached_img = image_cache.get(cache_key)
+    if cached_img:
+        return cached_img
+    
     try:
-        response = requests.get(url, timeout=10)
+        # Add timeout and stream for better performance
+        response = requests.get(url, timeout=5, stream=True)
         response.raise_for_status()
+        
+        # Load image
         img = Image.open(BytesIO(response.content))
+        
+        # Optimize image size
+        if img.mode in ('RGBA', 'P'):
+            img = img.convert('RGB')
+        
+        # Resize if larger than max_size
+        if img.size[0] > max_size[0] or img.size[1] > max_size[1]:
+            img.thumbnail(max_size, Image.Resampling.LANCZOS)
+        
+        # Cache the optimized image
+        image_cache.set(cache_key, img)
+        
         return img
     except:
         return None
-
-@st.cache_resource(show_spinner=False)
-def get_cached_image(url):
-    return load_image_from_url(url)
 
 def get_products(product_created_date, comparison_type="EQUALS"):
     """
@@ -265,14 +362,12 @@ def get_products(product_created_date, comparison_type="EQUALS"):
 def get_inventory_data(order_start, order_end, product_start=None, product_end=None, categories=None):
     """
     Fetch inventory and sales data with optional product age and category filters.
-    - categories: can be a list ['Saree', 'Dress'] or a comma-separated string.
     """
     try:
         creds = init_credentials()
         headers = get_headers(creds)
         if not headers: return pd.DataFrame()
 
-        # Handle category list conversion for SQL STRING_SPLIT
         category_str = ",".join(categories) if isinstance(categories, list) else categories
         
         query = """
@@ -322,7 +417,6 @@ def get_inventory_data(order_start, order_end, product_start=None, product_end=N
         
         df = pd.DataFrame(items)
         
-        # Data Cleaning
         if 'totalInventory' in df.columns:
             df['totalInventory'] = df['totalInventory'].apply(lambda x: max(x, 0) if pd.notna(x) else 0)
         
@@ -373,8 +467,8 @@ def calculate_metrics(launch_df, sales_df, launch_date):
     
     return metrics
 
-def display_product_card_vertical(product_data, inventory_data, category):
-    """Display a single product card optimized for a grid"""
+def display_product_card_optimized(product_data, inventory_data, category, image_url=None):
+    """Display a single product card with optimized image loading"""
     sku = product_data['sku']
     title = product_data['title']
     
@@ -389,17 +483,20 @@ def display_product_card_vertical(product_data, inventory_data, category):
         current_stock = 0
         order_count = 0
     
-    with st.container(border=True):
-        with st.spinner("🖼️"):
-            image_url = fetch_product_image_by_category(category, title)
-            if image_url:
-                img = get_cached_image(image_url) 
+    with st.container(border=True):        
+        if image_url:
+            try:
+                img = load_image_from_url_optimized(image_url)
                 if img:
                     st.image(img, width='stretch')
                 else:
-                    st.image("https://via.placeholder.com/300x300?text=No+Image", width='stretch')
-            else:
-                st.image("https://via.placeholder.com/300x300?text=No+Image", width='stretch')
+                    st.markdown('<div class="loading-placeholder">📷 No Image</div>', unsafe_allow_html=True)
+            except:
+                st.markdown('<div class="loading-placeholder">📷 Error</div>', unsafe_allow_html=True)
+        else:
+            st.markdown('<div class="loading-placeholder">📷 No Image</div>', unsafe_allow_html=True)
+        
+        st.markdown('</div>', unsafe_allow_html=True)
         
         st.markdown(f"**{title}**")
         st.caption(f"SKU: `{sku}`")
@@ -409,26 +506,69 @@ def display_product_card_vertical(product_data, inventory_data, category):
         mcol2.metric("Stock", f"{current_stock:,.0f}")
         mcol3.metric("Orders", f"{order_count}")
 
-def display_product_grid(products_df, inventory_df, category):
-    """Renders products in a clean 3-column responsive grid"""
+def display_product_grid_with_pagination_optimized(products_df, inventory_df, category, section_type, products_per_page=10):
+    """
+    Optimized version with batch image loading and lazy loading
+    """
     if products_df.empty:
-        st.info("No products found in this classification.")
+        st.info(f"No {section_type} products found in this classification.")
         return
 
+    # Get unique products
     product_list = products_df[['sku', 'title']].drop_duplicates().to_dict('records')
+    total_products = len(product_list)
     
-    for i in range(0, len(product_list), 3):
+    # Initialize pagination state
+    pagination_key = f"pagination_{category}_{section_type}"
+    if pagination_key not in st.session_state:
+        st.session_state[pagination_key] = 0
+    
+    # Calculate pagination
+    start_idx = st.session_state[pagination_key] * products_per_page
+    end_idx = min(start_idx + products_per_page, total_products)
+    
+    # Display current page info
+    st.markdown(f"<p style='text-align: center; color: #666;'>Showing {start_idx + 1}-{end_idx} of {total_products} {section_type} products</p>", unsafe_allow_html=True)
+    
+    # Get current page products
+    current_page_products = product_list[start_idx:end_idx]
+    
+    # Batch load images for current page
+    with st.spinner("🖼️ Loading images..."):
+        product_titles = [p['title'] for p in current_page_products]
+        image_map = fetch_product_images_batch(category, product_titles)
+    
+    # Display products in grid
+    for i in range(0, len(current_page_products), 3):
         cols = st.columns(3)
-        chunk = product_list[i:i+3]
+        chunk = current_page_products[i:i+3]
         
         for j, product_data in enumerate(chunk):
             with cols[j]:
-                display_product_card_vertical(product_data, inventory_df, category)
+                image_url = image_map.get(product_data['title'])
+                display_product_card_optimized(product_data, inventory_df, category, image_url)
+    
+    # Pagination controls
+    col1, col2, col3, col4, col5 = st.columns([1, 1, 2, 1, 1])
+    
+    with col2:
+        if st.button("◀ Previous", key=f"prev_{category}_{section_type}", disabled=st.session_state[pagination_key] == 0):
+            st.session_state[pagination_key] -= 1
+            st.rerun()
+    
+    with col3:
+        st.markdown(f"<p style='text-align: center;'>Page {st.session_state[pagination_key] + 1} of {(total_products - 1) // products_per_page + 1}</p>", unsafe_allow_html=True)
+    
+    with col4:
+        if st.button("Next ▶", key=f"next_{category}_{section_type}", disabled=end_idx >= total_products):
+            st.session_state[pagination_key] += 1
+            st.rerun()
+    
 
 def main():
     expected_token = get_auth_token()
 
-    # Session Management: Check Query Params on load to persist login across hard refreshes
+    # Session Management
     if st.query_params.get("session") == expected_token:
         st.session_state['is_logged_in'] = True
     elif 'is_logged_in' not in st.session_state:
@@ -459,7 +599,7 @@ def main():
                     
                     if email_input == env_email and password_input == env_password:
                         st.session_state['is_logged_in'] = True
-                        st.query_params["session"] = expected_token # Set token in URL
+                        st.query_params["session"] = expected_token
                         st.rerun() 
                     else:
                         st.error("❌ Invalid email or password")
@@ -494,6 +634,16 @@ def main():
             
             st.markdown("---")
             
+            # Add products per page selector
+            products_per_page = st.selectbox(
+                "Products per page",
+                options=[6, 9, 12, 15, 18, 21, 24],
+                index=1  # Default to 9 for faster loading
+            )
+            
+            # Option to disable images for faster loading
+            disable_images = st.checkbox("Disable images for faster loading", value=False)
+            
             start_analysis = st.button("🚀 Start Analysis", type="primary", width='stretch')
             
             if start_analysis:
@@ -511,7 +661,7 @@ def main():
                 st.session_state['is_logged_in'] = False
                 st.session_state['analysis_started'] = False
                 if "session" in st.query_params:
-                    del st.query_params["session"] # Clear token from URL
+                    del st.query_params["session"]
                 st.rerun()
     
     # Main content area - Authentication Gate
@@ -562,17 +712,12 @@ def main():
             today_str = f"{datetime.now().date()}T23:59:59Z"
             
             with st.spinner("📥 Fetching product data..."):
-                # 1. Get products launched EXACTLY on launch date
                 products_df = get_products(launch_date_str, comparison_type="EQUALS")
-
-                # Identify categories involved in this launch for efficient filtering
                 launch_categories = products_df['productType'].unique().tolist() if not products_df.empty else []
 
             with st.spinner("📥 Fetching filtered inventory data..."):
-                # 2. Fetch inventory for the specific analysis window
                 inventory_df = get_inventory_data(order_start_str, order_end_str)
-                print(inventory_df)
-                # 3. OPTIMIZED: Fetch all-time sales ONLY for categories launched on the specific date
+                
                 all_time_sales = pd.DataFrame()
                 if launch_categories:
                     all_time_sales = get_inventory_data(
@@ -652,8 +797,7 @@ def main():
                 }).reset_index()
                 
                 sku_level['sku_initial'] = sku_level['quantity'] + sku_level['totalInventory']
-                x = sku_level.groupby('product_category')['sku_initial'].sum().reset_index()
-                print(x[x['product_category']=='Antique Jhumka'])
+                
                 return sku_level.groupby('product_category')['sku_initial'].sum().reset_index()
 
             # --- START DATA PROCESSING ---
@@ -686,23 +830,12 @@ def main():
                 summary_df = pd.merge(summary_df, new_init_df, on='product_category', how='outer')
                 summary_df = pd.merge(summary_df, old_init_df, on='product_category', how='outer').fillna(0)
                 
-                # --- NEW CALCULATIONS & REARRANGEMENT ---
                 # Calculate Sales Percentages
                 summary_df['Sales % of New SKUs'] = (summary_df['New Quantity sold'] / summary_df['Initial Qty New'] * 100).fillna(0)
                 summary_df['Sales % of Old SKUs'] = (summary_df['Old Quantity sold'] / summary_df['Initial Qty Old'] * 100).fillna(0)
 
-                # Rename for clarity to match your requested order
-                summary_df.rename(columns={
-                    'product_category': 'Categories'
-                    # 'Count of New SKU Sold': 'Count of New SKUs Sold',
-                    # 'New Quantity sold': 'New SKUs Qty Sold',
-                    # 'Initial Qty New': 'New SKUs Initial Qty',
-                    # 'Count of Old SKU Sold': 'Count of Old SKUs Sold',
-                    # 'Old Quantity sold': 'Old SKUs Qty Sold',
-                    # 'Initial Qty Old': 'Old SKUs Initial Qty'
-                }, inplace=True)
+                summary_df.rename(columns={'product_category': 'Categories'}, inplace=True)
 
-                # Reorder Columns
                 column_order = [
                     'Categories', 
                     'Count of New SKU Sold', 'New Quantity sold', 'Initial Qty New', 'Sales % of New SKUs',
@@ -712,7 +845,6 @@ def main():
                 
                 st.markdown("## 📋 New Products Sales Summary by Category")
                 
-                # Render Table
                 st.dataframe(
                     summary_df,
                     width='stretch',
@@ -728,7 +860,6 @@ def main():
                     }
                 )
                     
-                # --- CALCULATE TOTALS (Moved inside the IF block) ---
                 total_new_skus = summary_df['Count of New SKU Sold'].sum()
                 total_new_qty = summary_df['New Quantity sold'].sum()
                 total_old_skus = summary_df['Count of Old SKU Sold'].sum()
@@ -815,11 +946,30 @@ def main():
                             ]
                             
                             st.markdown("#### ✨ Newly Launched Products")
-                            display_product_grid(new_cat_products, inventory_df, selected_category)
+                            if disable_images:
+                                # Simple version without images for maximum speed
+                                st.dataframe(new_cat_products[['sku', 'title', 'quantity', 'totalInventory']])
+                            else:
+                                display_product_grid_with_pagination_optimized(
+                                    new_cat_products, 
+                                    inventory_df, 
+                                    selected_category, 
+                                    "new",
+                                    products_per_page
+                                )
                             
                             st.markdown("---")
                             st.markdown("#### 🕰️ Legacy / Existing Products")
-                            display_product_grid(old_cat_products, inventory_df, selected_category)
+                            if disable_images:
+                                st.dataframe(old_cat_products[['sku', 'title', 'quantity', 'totalInventory']])
+                            else:
+                                display_product_grid_with_pagination_optimized(
+                                    old_cat_products, 
+                                    inventory_df, 
+                                    selected_category, 
+                                    "old",
+                                    products_per_page
+                                )
                 else:
                     st.warning("No categories available for the selected launch date.")
             else:
